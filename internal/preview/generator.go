@@ -451,11 +451,14 @@ type WaypointOptions struct {
 	FrameMeters float64
 }
 
-// RenderWaypoint produces a small JPEG centered on one waypoint with
-// a KAM marker and the waypoint number. Used to populate the per-
-// waypoint images inside <GUID>/image/WP_*.jpg, which DJI Fly displays
-// next to each waypoint in its mission editor.
-func RenderWaypoint(ctx context.Context, lat, lng float64, num int, opts WaypointOptions) ([]byte, error) {
+// RenderWaypoint produces a small JPEG centered on one waypoint. Used
+// to populate the per-waypoint images inside <GUID>/image/WP_*.jpg,
+// which DJI Fly displays next to each waypoint in its mission editor.
+// Nothing is drawn on top of the tile EXCEPT when hasAction is true —
+// then a small gold "!" badge lands in the upper-right corner so
+// capture/hover waypoints are visually distinct from navigation hops
+// even at the editor's small thumbnail size.
+func RenderWaypoint(ctx context.Context, lat, lng float64, num int, hasAction bool, opts WaypointOptions) ([]byte, error) {
 	if opts.Width == 0 {
 		opts.Width = 180
 	}
@@ -500,16 +503,41 @@ func RenderWaypoint(ctx context.Context, lat, lng float64, num int, opts Waypoin
 		}
 	}
 OVERLAY:
-	// No overlay — DJI Fly draws its own waypoint number, pin, and any
-	// other badges on top of this image inside its mission editor.
-	// Anything we put here would just collide with DJI Fly's markup.
+	// DJI Fly draws its own waypoint number and pin on top of this
+	// image, so we leave the center alone. The only thing we add is a
+	// small action badge in the upper-right corner (gold filled circle
+	// with a black "!"); nav waypoints stay pure satellite tiles.
 	_ = num
+	if hasAction {
+		drawActionBadgeCorner(dc, 12, 12)
+	}
 
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, dc.Image(), &jpeg.Options{Quality: 82}); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// drawActionBadgeCorner places the same gold "!" indicator we use on
+// slot-preview markers, but anchored to a screen position (not to a
+// waypoint marker). Used on per-waypoint images where there's no
+// marker to attach the badge to.
+//
+// padX/padY are distances from the upper-right corner of the canvas.
+func drawActionBadgeCorner(dc *gg.Context, padX, padY float64) {
+	bx := float64(dc.Width()) - padX
+	by := padY
+	const badgeR = 8.0
+	dc.SetRGBA(0, 0, 0, 1)
+	dc.DrawCircle(bx, by, badgeR+1)
+	dc.Fill()
+	dc.SetRGBA(1, 0.85, 0.15, 1)
+	dc.DrawCircle(bx, by, badgeR)
+	dc.Fill()
+	setFontSize(dc, 13)
+	dc.SetRGB(0, 0, 0)
+	dc.DrawStringAnchored("!", bx, by+1, 0.5, 0.5)
 }
 
 // --- helpers ----------------------------------------------------------------

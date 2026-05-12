@@ -343,7 +343,7 @@ func (r *Registry) PushWaypointImages(ctx context.Context, deviceID, guid string
 	ts := time.Now().UnixMilli()
 	images := make([]WaypointImage, 0, len(mission.Waypoints))
 	for i, wp := range mission.Waypoints {
-		jpg, err := preview.RenderWaypoint(ctx, wp.Lat, wp.Lng, i+1, preview.WaypointOptions{})
+		jpg, err := preview.RenderWaypoint(ctx, wp.Lat, wp.Lng, i+1, wp.HasMeaningfulAction(), preview.WaypointOptions{})
 		if err != nil {
 			return i, fmt.Errorf("render waypoint %d: %w", i+1, err)
 		}
