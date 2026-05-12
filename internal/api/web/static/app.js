@@ -141,7 +141,13 @@ async function loadSlots() {
     for (const s of slots) {
       const li = document.createElement('li');
       li.dataset.guid = s.guid;
+      // Cache-bust on lastModified so re-uploads visibly refresh.
+      const cacheBust = s.lastModified ? `?v=${encodeURIComponent(s.lastModified)}` : '';
+      const thumb = s.previewAvailable
+        ? `<img class="slot-thumb" src="${s.previewUrl}${cacheBust}" alt="" loading="lazy">`
+        : `<div class="slot-thumb slot-thumb-empty">no preview</div>`;
       li.innerHTML = `
+        ${thumb}
         <div class="slot-info">
           <div class="slot-name-row">
             <span class="slot-name" data-role="name">${escapeHTML(s.name || 'Slot')}</span>
@@ -152,7 +158,6 @@ async function loadSlots() {
         <div class="slot-meta">
           <span>${bytesHuman(s.fileSize)}</span>
           <span>${timeHuman(s.lastModified)}</span>
-          ${s.previewAvailable ? '<span class="badge ok">preview</span>' : '<span class="badge bad">no preview</span>'}
         </div>
       `;
       li.addEventListener('click', (e) => {

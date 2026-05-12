@@ -261,7 +261,27 @@ main {
   word-break: break-all;
 }
 
-.slot-info { flex: 1 1 auto; }
+.slot-info { flex: 1 1 auto; min-width: 0; }
+
+.slot-thumb {
+  width: 100px;
+  height: 60px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: #060606;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--text-faint);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.slot-thumb-empty {
+  font-style: italic;
+}
 
 .slot-name-row {
   display: flex;
