@@ -503,13 +503,14 @@ func RenderWaypoint(ctx context.Context, lat, lng float64, num int, hasAction bo
 		}
 	}
 OVERLAY:
-	// DJI Fly draws its own waypoint number and pin on top of this
-	// image, so we leave the center alone. The only thing we add is a
-	// small action badge in the upper-right corner (gold filled circle
-	// with a black "!"); nav waypoints stay pure satellite tiles.
 	_ = num
+	// Action waypoints get a 70%-opaque gold wash over the upper-right
+	// quadrant. A small corner badge couldn't survive DJI Fly's crop
+	// of the 180x135 thumbnail down to whatever its editor displays;
+	// a quarter-image tint always shows at least partially regardless
+	// of how DJI Fly crops or zooms.
 	if hasAction {
-		drawActionBadgeCorner(dc)
+		drawActionQuadrant(dc)
 	}
 
 	var buf bytes.Buffer
@@ -519,33 +520,19 @@ OVERLAY:
 	return buf.Bytes(), nil
 }
 
-// drawActionBadgeCorner places a gold "!" indicator in the upper-right
-// of the canvas. Sized as a fraction of the canvas height so it stays
-// visible after DJI Fly's editor downscales the image to its display.
-// On a 180x135 thumbnail this produces a ~36px-wide badge — at
-// DJI Fly's typical 60-80px display width it still reads as ~12px,
-// which is unambiguous.
-func drawActionBadgeCorner(dc *gg.Context) {
-	// Anchor the badge at 28% of canvas height in radius, scaled by H.
-	badgeR := float64(dc.Height()) * 0.18
-	if badgeR < 14 {
-		badgeR = 14
-	}
-	bx := float64(dc.Width()) - badgeR - 4
-	by := badgeR + 4
-	// Outer black ring for contrast against any tile content.
-	dc.SetRGBA(0, 0, 0, 1)
-	dc.DrawCircle(bx, by, badgeR+2)
+// drawActionQuadrant fills the upper-right quarter of the canvas with
+// semi-opaque gold so it reads as "action" regardless of DJI Fly's
+// downscale or crop. Alpha 0.7 — more opaque than transparent so the
+// quadrant clearly stands out, but still lets the satellite tile show
+// through enough that the user can see the location underneath.
+func drawActionQuadrant(dc *gg.Context) {
+	w := float64(dc.Width())
+	h := float64(dc.Height())
+	dc.SetRGBA(1, 0.78, 0.10, 0.7)
+	dc.DrawRectangle(w/2, 0, w/2, h/2)
 	dc.Fill()
-	// Gold fill.
-	dc.SetRGBA(1, 0.85, 0.15, 1)
-	dc.DrawCircle(bx, by, badgeR)
-	dc.Fill()
-	// "!" — sized so it visually fills the badge.
-	setFontSize(dc, badgeR*1.45)
-	dc.SetRGB(0, 0, 0)
-	dc.DrawStringAnchored("!", bx, by+badgeR*0.06, 0.5, 0.5)
 }
+
 
 // --- helpers ----------------------------------------------------------------
 
