@@ -117,6 +117,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/devices", s.handleListDevices)
 	mux.HandleFunc("GET /api/devices/{deviceId}/slots", s.handleListSlots)
 	mux.HandleFunc("GET /api/devices/{deviceId}/slots/{guid}/preview", s.handleReadPreview)
+	mux.HandleFunc("GET /api/devices/{deviceId}/slots/{guid}/kmz", s.handleDownloadKMZ)
 	mux.HandleFunc("POST /api/devices/{deviceId}/slots/{guid}/transfer", s.handleTransfer)
 	mux.HandleFunc("DELETE /api/devices/{deviceId}/slots/{guid}", s.handleClearSlot)
 	mux.HandleFunc("POST /api/devices/{deviceId}/refresh", s.handleRefresh)

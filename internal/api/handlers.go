@@ -227,6 +227,52 @@ func (s *Server) handleInspectKMZ(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleDownloadKMZ streams the slot's on-device KMZ back to the
+// browser as a downloadable attachment. The browser's saved name can
+// be overridden via a ?name= query (the UI passes the slot's
+// friendly name there); without one we fall back to the GUID.
+func (s *Server) handleDownloadKMZ(w http.ResponseWriter, r *http.Request) {
+	deviceID := pathParam(r, "deviceId")
+	guid := pathParam(r, "guid")
+	if !kmz.IsValidGUID(guid) {
+		writeError(w, http.StatusBadRequest, CodeInvalidGUID, "guid is malformed", map[string]any{"guid": guid})
+		return
+	}
+	filename := guid + ".kmz"
+	if n := strings.TrimSpace(r.URL.Query().Get("name")); n != "" {
+		filename = sanitizeFilename(n) + ".kmz"
+	}
+	w.Header().Set("Content-Type", "application/vnd.google-earth.kmz")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	if err := s.registry.ReadKMZ(deviceID, guid, w); err != nil {
+		// Headers are already sent; just log so the user sees the
+		// truncated download as the failure signal.
+		s.logger.Warn("kmz download failed", "guid", guid, "err", err)
+	}
+}
+
+// sanitizeFilename strips characters that don't survive on common
+// filesystems / browser download dialogs.
+func sanitizeFilename(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == ' ', r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		out = "mission"
+	}
+	return out
+}
+
 // handleSetSlotName persists a user-assigned name. The slot's GUID
 // doesn't actually have to exist on the device — names are stored
 // host-side, so the user can pre-name a slot before plugging in.

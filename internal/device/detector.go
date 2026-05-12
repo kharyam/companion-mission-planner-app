@@ -358,6 +358,21 @@ func (r *Registry) PushWaypointImages(ctx context.Context, deviceID, guid string
 	return len(images), nil
 }
 
+// ReadKMZ streams the slot's on-device KMZ into w. Used by the
+// /api/devices/.../slots/.../kmz endpoint so users can pull the
+// current mission off the controller.
+func (r *Registry) ReadKMZ(deviceID, guid string, w io.Writer) error {
+	c, err := r.Lookup(deviceID)
+	if err != nil {
+		return err
+	}
+	puller, ok := c.(KMZReader)
+	if !ok {
+		return fmt.Errorf("controller does not support KMZ read")
+	}
+	return puller.ReadKMZ(guid, w)
+}
+
 // SetSlotName persists a user-assigned name for a slot.
 func (r *Registry) SetSlotName(deviceID, guid, name string) error {
 	if r.names == nil {

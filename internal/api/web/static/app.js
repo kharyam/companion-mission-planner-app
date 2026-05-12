@@ -153,6 +153,7 @@ async function loadSlots() {
           <div class="slot-name-row">
             <span class="slot-name" data-role="name">${escapeHTML(s.name || 'Slot')}</span>
             <button type="button" class="rename-btn" title="Rename slot" data-role="rename">✎</button>
+            <button type="button" class="rename-btn" title="Download current KMZ" data-role="download">⤓</button>
             <button type="button" class="rename-btn" title="Regenerate preview from on-device KMZ" data-role="regen">↻</button>
             <button type="button" class="rename-btn" title="Push per-waypoint images (overwrites any drone photos)" data-role="wp">⎙</button>
             <button type="button" class="rename-btn danger" title="Clear slot (replace mission with a placeholder)" data-role="clear">✕</button>
@@ -184,6 +185,10 @@ async function loadSlots() {
       li.querySelector('[data-role="clear"]').addEventListener('click', async (e) => {
         e.stopPropagation();
         await clearSlotConfirm(s);
+      });
+      li.querySelector('[data-role="download"]').addEventListener('click', (e) => {
+        e.stopPropagation();
+        downloadKMZ(s);
       });
       if (state.selectedSlot?.guid === s.guid) li.classList.add('selected');
       list.appendChild(li);
@@ -377,6 +382,24 @@ async function batchPushAllWaypointImages() {
       method: 'POST',
     })
   );
+}
+
+// ---------- download KMZ ----------
+
+function downloadKMZ(slot) {
+  const name = (slot.name || '').trim();
+  const params = new URLSearchParams();
+  if (name) params.set('name', name);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const url = `/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(slot.guid)}/kmz${qs}`;
+  // Triggering the download via a hidden anchor lets the browser's
+  // Save dialog fire without leaving the page.
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = ''; // server's Content-Disposition wins
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => a.remove(), 0);
 }
 
 // ---------- clear slot ----------
