@@ -277,6 +277,36 @@ main {
 
 .slot-info { flex: 1 1 auto; min-width: 0; }
 
+.managed-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  padding: 4px;
+}
+.managed-toggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: var(--red);
+}
+
+/* Unmanaged: dim everything in the slot card EXCEPT the managed
+   checkbox itself, so the user can clearly see (and click) the
+   control that re-enables management. */
+.slot-list li.unmanaged .slot-info,
+.slot-list li.unmanaged .slot-meta {
+  opacity: 0.45;
+}
+.slot-list li.unmanaged .slot-thumb {
+  opacity: 0.45;
+  filter: grayscale(0.85);
+}
+.slot-list li.unmanaged .rename-btn:disabled {
+  cursor: not-allowed;
+}
+
 .slot-thumb {
   width: 100px;
   height: 60px;

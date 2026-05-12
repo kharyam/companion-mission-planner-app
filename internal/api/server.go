@@ -124,6 +124,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/kmz/inspect", s.handleInspectKMZ)
 	mux.HandleFunc("PUT /api/devices/{deviceId}/slots/{guid}/name", s.handleSetSlotName)
 	mux.HandleFunc("DELETE /api/devices/{deviceId}/slots/{guid}/name", s.handleClearSlotName)
+	mux.HandleFunc("PUT /api/devices/{deviceId}/slots/{guid}/managed", s.handleSetSlotManaged)
 	mux.HandleFunc("POST /api/devices/{deviceId}/slots/{guid}/preview/regenerate", s.handleRegeneratePreview)
 	mux.HandleFunc("POST /api/devices/{deviceId}/slots/{guid}/waypoint-images", s.handlePushWaypointImages)
 	mux.HandleFunc("PUT /api/devices/{deviceId}/slot-order", s.handleSetSlotOrder)

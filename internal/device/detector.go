@@ -15,6 +15,7 @@ import (
 	"github.com/kamdynamics/kam-transfer/internal/adb"
 	"github.com/kamdynamics/kam-transfer/internal/config"
 	"github.com/kamdynamics/kam-transfer/internal/kmz"
+	"github.com/kamdynamics/kam-transfer/internal/managed"
 	"github.com/kamdynamics/kam-transfer/internal/mtp"
 	"github.com/kamdynamics/kam-transfer/internal/names"
 	"github.com/kamdynamics/kam-transfer/internal/preview"
@@ -57,6 +58,10 @@ type Registry struct {
 	// order is the per-device user-chosen slot ordering. Optional;
 	// nil means "use whatever the controller returns".
 	order *slotorder.Store
+
+	// managed records the per-slot user opt-out (default true; only
+	// false when the user has explicitly unchecked "managed").
+	managed *managed.Store
 }
 
 // NewRegistry creates a registry. It does not start polling; the API
@@ -71,6 +76,10 @@ func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 	if err != nil {
 		logger.Warn("slot-order store unavailable", "err", err)
 	}
+	managedStore, err := managed.New(managedPath(cfg))
+	if err != nil {
+		logger.Warn("managed-flag store unavailable", "err", err)
+	}
 	r := &Registry{
 		cfg:            cfg,
 		logger:         logger,
@@ -80,6 +89,7 @@ func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 		previewEnabled: previewEnabled,
 		names:          store,
 		order:          orderStore,
+		managed:        managedStore,
 	}
 	t, err := adb.Dial(cfg.ADB.ServerHost, cfg.ADB.ServerPort)
 	if err != nil {
@@ -233,6 +243,23 @@ func slotOrderPath(cfg *config.Config) string {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(cfgPath), "slot-order.json")
+}
+
+// managedPath is the parallel sidecar for the per-slot managed flag.
+func managedPath(cfg *config.Config) string {
+	cfgPath, err := config.DefaultPath()
+	if err != nil || cfg == nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(cfgPath), "slot-managed.json")
+}
+
+// SetSlotManaged persists the user's per-slot managed flag.
+func (r *Registry) SetSlotManaged(deviceID, guid string, val bool) error {
+	if r.managed == nil {
+		return fmt.Errorf("managed store unavailable")
+	}
+	return r.managed.Set(deviceID, guid, val)
 }
 
 // SetSlotOrder persists a user-chosen ordering of slot GUIDs for the
@@ -506,6 +533,13 @@ func (r *Registry) ListSlots(ctx context.Context, deviceID string) ([]Slot, erro
 		return nil, err
 	}
 	slots = r.applySavedNames(deviceID, slots)
+	for i := range slots {
+		if r.managed != nil {
+			slots[i].Managed = r.managed.Get(deviceID, slots[i].GUID)
+		} else {
+			slots[i].Managed = true
+		}
+	}
 	if r.order != nil {
 		slots = slotorder.Reorder(r.order.Get(deviceID), slots, func(s Slot) string { return s.GUID })
 	}

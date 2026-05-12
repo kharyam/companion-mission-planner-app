@@ -147,16 +147,22 @@ async function loadSlots() {
       const thumb = s.previewAvailable
         ? `<img class="slot-thumb" src="${s.previewUrl}${cacheBust}" alt="" loading="lazy">`
         : `<div class="slot-thumb slot-thumb-empty">no preview</div>`;
+      const managed = s.managed !== false; // default true if backend somehow missed it
+      const writeDisabled = managed ? '' : ' disabled';
+      li.classList.toggle('unmanaged', !managed);
       li.innerHTML = `
+        <label class="managed-toggle" title="Managed: include this slot in batch operations and allow write actions">
+          <input type="checkbox" data-role="managed" ${managed ? 'checked' : ''}>
+        </label>
         ${thumb}
         <div class="slot-info">
           <div class="slot-name-row">
             <span class="slot-name" data-role="name">${escapeHTML(s.name || 'Slot')}</span>
-            <button type="button" class="rename-btn" title="Rename slot" data-role="rename">✎</button>
+            <button type="button" class="rename-btn" title="Rename slot" data-role="rename"${writeDisabled}>✎</button>
             <button type="button" class="rename-btn" title="Download current KMZ" data-role="download">⤓</button>
-            <button type="button" class="rename-btn" title="Regenerate preview from on-device KMZ" data-role="regen">↻</button>
-            <button type="button" class="rename-btn" title="Push per-waypoint images (overwrites any drone photos)" data-role="wp">⎙</button>
-            <button type="button" class="rename-btn danger" title="Clear slot (replace mission with a placeholder)" data-role="clear">✕</button>
+            <button type="button" class="rename-btn" title="Regenerate preview from on-device KMZ" data-role="regen"${writeDisabled}>↻</button>
+            <button type="button" class="rename-btn" title="Push per-waypoint images (overwrites any drone photos)" data-role="wp"${writeDisabled}>⎙</button>
+            <button type="button" class="rename-btn danger" title="Clear slot (replace mission with a placeholder)" data-role="clear"${writeDisabled}>✕</button>
           </div>
           <div class="slot-guid">${escapeHTML(s.guid)}</div>
         </div>
@@ -189,6 +195,26 @@ async function loadSlots() {
       li.querySelector('[data-role="download"]').addEventListener('click', (e) => {
         e.stopPropagation();
         downloadKMZ(s);
+      });
+      li.querySelector('[data-role="managed"]').addEventListener('click', (e) => {
+        e.stopPropagation();
+      });
+      li.querySelector('[data-role="managed"]').addEventListener('change', async (e) => {
+        const newVal = e.target.checked;
+        try {
+          await api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(s.guid)}/managed`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ managed: newVal }),
+          });
+          s.managed = newVal;
+          li.classList.toggle('unmanaged', !newVal);
+          li.querySelectorAll('.rename-btn:not([data-role="download"])').forEach(b => b.disabled = !newVal);
+          toast('ok', newVal ? 'Now managed' : 'Now unmanaged', s.guid.slice(0, 8));
+        } catch (err) {
+          e.target.checked = !newVal;
+          toast('bad', 'Could not save managed flag', err.message || err.code);
+        }
       });
       if (state.selectedSlot?.guid === s.guid) li.classList.add('selected');
       list.appendChild(li);
@@ -355,7 +381,7 @@ async function runBatch({ title, action, slots }, fn) {
 }
 
 async function batchRegenerateAllPreviews() {
-  const slots = Array.from(document.querySelectorAll('#slot-list li[data-guid]')).map(li => {
+  const slots = Array.from(document.querySelectorAll('#slot-list li[data-guid]:not(.unmanaged)')).map(li => {
     return { guid: li.dataset.guid, name: li.querySelector('.slot-name')?.textContent };
   });
   await runBatch({
@@ -370,7 +396,7 @@ async function batchRegenerateAllPreviews() {
 }
 
 async function batchPushAllWaypointImages() {
-  const slots = Array.from(document.querySelectorAll('#slot-list li[data-guid]')).map(li => {
+  const slots = Array.from(document.querySelectorAll('#slot-list li[data-guid]:not(.unmanaged)')).map(li => {
     return { guid: li.dataset.guid, name: li.querySelector('.slot-name')?.textContent };
   });
   await runBatch({

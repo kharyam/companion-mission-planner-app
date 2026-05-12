@@ -298,6 +298,30 @@ func (s *Server) handleSetSlotName(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deviceId": deviceID, "guid": guid, "name": body.Name})
 }
 
+// handleSetSlotManaged accepts {"managed": true|false} and persists.
+// Slots default to managed=true; setting false opts the slot out of
+// batch operations and disables write actions in the UI.
+func (s *Server) handleSetSlotManaged(w http.ResponseWriter, r *http.Request) {
+	deviceID := pathParam(r, "deviceId")
+	guid := pathParam(r, "guid")
+	if !kmz.IsValidGUID(guid) {
+		writeError(w, http.StatusBadRequest, CodeInvalidGUID, "guid is malformed", map[string]any{"guid": guid})
+		return
+	}
+	var body struct {
+		Managed *bool `json:"managed"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Managed == nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "body must be {\"managed\":true|false}", nil)
+		return
+	}
+	if err := s.registry.SetSlotManaged(deviceID, guid, *body.Managed); err != nil {
+		writeError(w, http.StatusInternalServerError, CodeInternalError, err.Error(), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deviceId": deviceID, "guid": guid, "managed": *body.Managed})
+}
+
 func (s *Server) handleClearSlotName(w http.ResponseWriter, r *http.Request) {
 	deviceID := pathParam(r, "deviceId")
 	guid := pathParam(r, "guid")

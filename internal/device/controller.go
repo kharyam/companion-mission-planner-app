@@ -32,6 +32,11 @@ type Slot struct {
 	FileSize         int64     `json:"fileSize"`
 	PreviewAvailable bool      `json:"previewAvailable"`
 	PreviewURL       string    `json:"previewUrl,omitempty"`
+	// Managed reflects the user's per-slot opt-in. Default true. When
+	// false, the UI greys the card and disables write actions; batch
+	// operations (regen all, push all wp images) skip it. Download
+	// stays enabled regardless.
+	Managed bool `json:"managed"`
 }
 
 // TransferResult is returned after a successful KMZ push.
