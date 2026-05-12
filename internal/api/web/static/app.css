@@ -210,10 +210,48 @@ main {
   color: var(--text-faint);
   font-style: italic;
   cursor: default;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .device-list li.placeholder:hover, .slot-list li.placeholder:hover {
   background: transparent;
+}
+
+.device-list li.placeholder.loading::before,
+.slot-list li.placeholder.loading::before {
+  content: "";
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--red);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+  flex-shrink: 0;
+}
+
+/* Top scan-bar that runs along the panel head while loading. */
+.panel.loading .panel-head {
+  position: relative;
+  overflow: hidden;
+}
+.panel.loading .panel-head::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--red), transparent);
+  animation: scan-bar 1.4s ease-in-out infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes scan-bar {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }
 
 .dev-id, .slot-guid {
@@ -368,6 +406,27 @@ main {
   cursor: not-allowed;
 }
 
+.primary.loading {
+  position: relative;
+  padding-left: 38px;
+  background: var(--red-dim);
+  color: rgba(255, 255, 255, 0.85);
+  cursor: progress;
+}
+.primary.loading::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+
 .ghost {
   background: transparent;
   color: var(--text-dim);
@@ -429,6 +488,94 @@ main {
   word-break: break-word;
 }
 
+/* ----- modal ----- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(4px);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fade-in 220ms ease;
+}
+
+.modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-top: 3px solid var(--red);
+  border-radius: 6px;
+  max-width: 480px;
+  width: 100%;
+  padding: 28px 28px 22px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);
+  animation: pop-in 280ms cubic-bezier(.16,.84,.42,1);
+}
+
+.modal.ok    { border-top-color: var(--good); }
+.modal.bad   { border-top-color: var(--bad); }
+
+.modal-icon {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 28px;
+  font-weight: 700;
+  background: rgba(255, 0, 0, 0.1);
+  color: var(--red);
+}
+.modal.ok .modal-icon  { background: rgba(74, 222, 128, 0.12); color: var(--good); }
+.modal.bad .modal-icon { background: rgba(239, 68, 68, 0.12); color: var(--bad); }
+
+.modal-title {
+  text-align: center;
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.modal-subtitle {
+  text-align: center;
+  margin: 0 0 18px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.modal-detail {
+  background: #050505;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 18px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.modal-detail dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+}
+.modal-detail dt { color: var(--text-faint); }
+.modal-detail dd { margin: 0; color: var(--text); word-break: break-all; }
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 /* ----- animations ----- */
 
 @keyframes enter {
@@ -439,6 +586,16 @@ main {
 @keyframes slide-in {
   from { opacity: 0; transform: translateX(20px); }
   to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes pop-in {
+  0%   { opacity: 0; transform: scale(0.92); }
+  100% { opacity: 1; transform: scale(1); }
 }
 
 /* ----- responsive ----- */

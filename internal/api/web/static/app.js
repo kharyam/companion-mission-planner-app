@@ -71,7 +71,8 @@ async function pollHealth() {
 
 async function loadDevices() {
   const list = $('device-list');
-  list.innerHTML = '<li class="placeholder">scanning…</li>';
+  $('devices-panel').classList.add('loading');
+  list.innerHTML = '<li class="placeholder loading">Scanning USB bus…</li>';
   try {
     const { devices } = await api('/api/devices');
     list.innerHTML = '';
@@ -108,6 +109,8 @@ async function loadDevices() {
   } catch (e) {
     list.innerHTML = '';
     toast('bad', 'Could not list devices', e.message || e.code);
+  } finally {
+    $('devices-panel').classList.remove('loading');
   }
 }
 
@@ -126,7 +129,8 @@ async function selectDevice(d) {
 async function loadSlots() {
   if (!state.selectedDevice) return;
   const list = $('slot-list');
-  list.innerHTML = '<li class="placeholder">loading slots…</li>';
+  $('slots-panel').classList.add('loading');
+  list.innerHTML = '<li class="placeholder loading">Walking waypoint folder on device…</li>';
   try {
     const { slots } = await api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots`);
     list.innerHTML = '';
@@ -155,6 +159,8 @@ async function loadSlots() {
   } catch (e) {
     list.innerHTML = '';
     toast('bad', 'Could not list slots', e.message || e.code);
+  } finally {
+    $('slots-panel').classList.remove('loading');
   }
 }
 
@@ -251,8 +257,13 @@ async function submitTransfer(e) {
     }
   }
 
-  $('transfer-button').disabled = true;
-  $('transfer-hint').textContent = 'transferring…';
+  const btn = $('transfer-button');
+  btn.disabled = true;
+  btn.classList.add('loading');
+  btn.textContent = 'Transferring';
+  $('transfer-hint').textContent = `${state.file.name} → ${state.selectedSlot.guid.slice(0, 8)}…`;
+
+  const startedAt = performance.now();
   try {
     const res = await fetch(url, { method: 'POST', body: fd });
     const body = await res.json().catch(() => ({}));
@@ -260,13 +271,65 @@ async function submitTransfer(e) {
       const err = body.error || { message: res.statusText };
       throw err;
     }
-    toast('ok', 'Transfer complete', `${bytesHuman(body.fileSize)} → slot ${state.selectedSlot.guid.slice(0, 8)}`);
-    await loadSlots(); // re-read so the new size/mtime show up
+    const elapsed = Math.round(performance.now() - startedAt);
+    showModal('ok', 'Transfer complete', {
+      File: state.file.name,
+      Slot: state.selectedSlot.guid,
+      'Device': state.selectedDevice.id,
+      Size: bytesHuman(body.fileSize),
+      Elapsed: `${elapsed} ms`,
+      At: body.transferredAt || new Date().toISOString(),
+    });
+    await loadSlots();
   } catch (err) {
-    toast('bad', err.code || 'Transfer failed', err.message || JSON.stringify(err));
+    showModal('bad', err.code || 'Transfer failed', {
+      Reason: err.message || JSON.stringify(err),
+      Slot: state.selectedSlot.guid,
+      File: state.file?.name || '(none)',
+    });
   } finally {
+    btn.classList.remove('loading');
+    btn.textContent = 'Transfer';
     updateTransferButton();
   }
+}
+
+// ---------- modal ----------
+
+function showModal(kind, title, details) {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  const icon = kind === 'ok' ? '✓' : '✕';
+  const subtitle = kind === 'ok'
+    ? 'The KMZ landed on the controller. Open DJI Fly to verify the slot.'
+    : 'Something went wrong before the bytes landed.';
+  backdrop.innerHTML = `
+    <div class="modal ${kind}" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-icon">${icon}</div>
+      <h3 class="modal-title" id="modal-title"></h3>
+      <p class="modal-subtitle"></p>
+      <div class="modal-detail"><dl></dl></div>
+      <div class="modal-actions">
+        <button type="button" class="primary modal-close">OK</button>
+      </div>
+    </div>
+  `;
+  backdrop.querySelector('.modal-title').textContent = title;
+  backdrop.querySelector('.modal-subtitle').textContent = subtitle;
+  const dl = backdrop.querySelector('dl');
+  for (const [k, v] of Object.entries(details)) {
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = v;
+    dl.append(dt, dd);
+  }
+  const close = () => backdrop.remove();
+  backdrop.querySelector('.modal-close').addEventListener('click', close);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  document.addEventListener('keydown', function onKey(e) {
+    if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
+  });
+  document.body.appendChild(backdrop);
+  backdrop.querySelector('.modal-close').focus();
 }
 
 // ---------- dropzone ----------

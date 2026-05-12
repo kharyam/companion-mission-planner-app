@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -50,6 +52,8 @@ func newRootCmd() *cobra.Command {
 		newListSlotsCmd(),
 		newTransferCmd(),
 		newClearSlotCmd(),
+		newProbeTreeCmd(),
+		newProbeCatCmd(),
 		newVersionCmd(),
 	)
 	return root
@@ -233,6 +237,107 @@ func newClearSlotCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("device")
 	_ = cmd.MarkFlagRequired("slot")
 	return cmd
+}
+
+// probe-tree: recursive directory listing on an MTP device. Used while
+// reverse-engineering DJI Fly's on-disk layout — not part of the
+// shipping API surface, but kept around because it's handy.
+func newProbeTreeCmd() *cobra.Command {
+	var deviceID, root string
+	var depth int
+	cmd := &cobra.Command{
+		Use:   "probe-tree",
+		Short: "Walk an MTP device's file tree (debugging)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			logger := newLogger(cfg.Logging.Level)
+			reg, err := device.NewRegistry(cfg, logger)
+			if err != nil {
+				return err
+			}
+			if _, err := reg.List(cmd.Context()); err != nil {
+				return err
+			}
+			entries, err := reg.WalkTree(deviceID, root, depth)
+			if err != nil {
+				return err
+			}
+			for _, e := range entries {
+				prefix := strings.Repeat("  ", e.Depth)
+				kind := "-"
+				if e.IsFolder {
+					kind = "d"
+				}
+				mtime := ""
+				if !e.Mtime.IsZero() {
+					mtime = e.Mtime.Format("2006-01-02 15:04")
+				}
+				fmt.Printf("%s%s %10d  %s  %s\n", prefix, kind, e.Size, mtime, e.Path)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&deviceID, "device", "", "device ID (required)")
+	cmd.Flags().StringVar(&root, "root", "Internal shared storage/Android/data/dji.go.v5/files", "root path on the device")
+	cmd.Flags().IntVar(&depth, "depth", 0, "max recursion depth (0 = unlimited)")
+	_ = cmd.MarkFlagRequired("device")
+	return cmd
+}
+
+// probe-cat: dump a single file from an MTP device to stdout. Use with
+// `--limit` for large files; pipe through xxd / file / less as needed.
+func newProbeCatCmd() *cobra.Command {
+	var deviceID, path string
+	var limit int64
+	cmd := &cobra.Command{
+		Use:   "probe-cat",
+		Short: "Dump an MTP file's contents to stdout (debugging)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			logger := newLogger(cfg.Logging.Level)
+			reg, err := device.NewRegistry(cfg, logger)
+			if err != nil {
+				return err
+			}
+			if _, err := reg.List(cmd.Context()); err != nil {
+				return err
+			}
+			var w io.Writer = os.Stdout
+			if limit > 0 {
+				w = &limitedWriter{w: os.Stdout, remaining: limit}
+			}
+			return reg.ReadDeviceFile(deviceID, path, w)
+		},
+	}
+	cmd.Flags().StringVar(&deviceID, "device", "", "device ID (required)")
+	cmd.Flags().StringVar(&path, "path", "", "absolute file path on device (required)")
+	cmd.Flags().Int64Var(&limit, "limit", 0, "stop after N bytes (0 = no limit)")
+	_ = cmd.MarkFlagRequired("device")
+	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+type limitedWriter struct {
+	w         io.Writer
+	remaining int64
+}
+
+func (l *limitedWriter) Write(p []byte) (int, error) {
+	if l.remaining <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > l.remaining {
+		p = p[:l.remaining]
+	}
+	n, err := l.w.Write(p)
+	l.remaining -= int64(n)
+	return n, err
 }
 
 func newVersionCmd() *cobra.Command {
