@@ -27,6 +27,26 @@ type Point struct {
 	Lat float64 `json:"lat"`
 	Lng float64 `json:"lng"`
 	Alt float64 `json:"alt,omitempty"`
+	// Actions is the wpml:actionActuatorFunc list for this waypoint
+	// (e.g. ["gimbalRotate","hover","takePhoto","startRecord"]). The
+	// gimbalRotate/rotateYaw entries are routine setup; the others
+	// represent intentional drone behavior the user usually cares to
+	// see flagged on the map preview.
+	Actions []string `json:"actions,omitempty"`
+}
+
+// HasMeaningfulAction reports whether the waypoint includes any action
+// worth highlighting on a preview — currently takePhoto, startRecord,
+// stopRecord, hover. Camera-setup actions like gimbalRotate are
+// excluded because they accompany almost every waypoint.
+func (p Point) HasMeaningfulAction() bool {
+	for _, a := range p.Actions {
+		switch a {
+		case "takePhoto", "startRecord", "stopRecord", "hover":
+			return true
+		}
+	}
+	return false
 }
 
 // ExtractMission parses the first usable KML/WPML entry inside the
@@ -155,6 +175,22 @@ func parseKML(r io.Reader) (*Mission, error) {
 				stack = stack[:len(stack)-1] // DecodeElement consumed the end tag
 				if p, ok := parseCoordinate(raw); ok {
 					m.Waypoints = append(m.Waypoints, p)
+				}
+			case "actionActuatorFunc":
+				// wpml:action/wpml:actionActuatorFunc inside a Placemark
+				// tells us what each waypoint actually *does*. We append
+				// the value onto the most-recently-emitted waypoint.
+				if !inPlacemark() || len(m.Waypoints) == 0 {
+					continue
+				}
+				var raw string
+				if err := dec.DecodeElement(&raw, &t); err != nil {
+					return nil, err
+				}
+				stack = stack[:len(stack)-1]
+				if v := strings.TrimSpace(raw); v != "" {
+					last := &m.Waypoints[len(m.Waypoints)-1]
+					last.Actions = append(last.Actions, v)
 				}
 			case "author":
 				var raw string

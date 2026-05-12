@@ -522,8 +522,11 @@ async function autoInspect(file) {
     });
     ta.value = JSON.stringify(payload, null, 2);
     nameInput.value = body.name || '';
+    const actionNote = body.actionCount
+      ? `${body.actionCount} with action${body.actionCount === 1 ? '' : 's'}`
+      : 'all navigation';
     toast('ok', `Parsed ${body.count} waypoint${body.count === 1 ? '' : 's'}`,
-      body.source ? `from ${body.source}` : null);
+      `${actionNote}${body.source ? ` · from ${body.source}` : ''}`);
   } catch (err) {
     toast('warn', 'KMZ inspect threw', err.message);
   }
@@ -540,7 +543,7 @@ function resetTransferForm() {
   $('file-meta').textContent = 'no file selected';
   $('mission-name').value = '';
   $('preview-metadata').value = '';
-  $('push-wp-images').checked = false;
+  $('push-wp-images').checked = true;
   updateTransferButton();
 }
 

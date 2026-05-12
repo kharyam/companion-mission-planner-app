@@ -283,7 +283,11 @@ func (r *Registry) RegeneratePreview(ctx context.Context, deviceID, guid string)
 	}
 	pm := &preview.Metadata{Name: displayName}
 	for _, w := range mission.Waypoints {
-		pm.Waypoints = append(pm.Waypoints, preview.Waypoint{Lat: w.Lat, Lng: w.Lng})
+		pm.Waypoints = append(pm.Waypoints, preview.Waypoint{
+			Lat:       w.Lat,
+			Lng:       w.Lng,
+			HasAction: w.HasMeaningfulAction(),
+		})
 	}
 	if mission.Date != nil {
 		pm.Date = *mission.Date
@@ -536,7 +540,7 @@ func (r *Registry) uploadPreview(ctx context.Context, c Controller, guid string,
 		Date: meta.Date,
 	}
 	for _, w := range meta.Waypoints {
-		pm.Waypoints = append(pm.Waypoints, preview.Waypoint{Lat: w.Lat, Lng: w.Lng})
+		pm.Waypoints = append(pm.Waypoints, preview.Waypoint{Lat: w.Lat, Lng: w.Lng, HasAction: w.HasAction})
 	}
 	jpg, err := preview.Generate(ctx, pm, preview.Options{
 		Width:  r.cfg.Map.Width,

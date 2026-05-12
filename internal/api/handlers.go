@@ -193,8 +193,9 @@ func (s *Server) handleInspectKMZ(w http.ResponseWriter, r *http.Request) {
 	// Reshape into the exact previewMetadata schema the transfer
 	// handler expects, so the UI can plug it straight into the form.
 	type wp struct {
-		Lat float64 `json:"lat"`
-		Lng float64 `json:"lng"`
+		Lat       float64 `json:"lat"`
+		Lng       float64 `json:"lng"`
+		HasAction bool    `json:"hasAction,omitempty"`
 	}
 	resp := struct {
 		Name      string `json:"name,omitempty"`
@@ -203,6 +204,7 @@ func (s *Server) handleInspectKMZ(w http.ResponseWriter, r *http.Request) {
 		Author    string `json:"author,omitempty"`
 		Source    string `json:"source,omitempty"`
 		Count     int    `json:"count"`
+		ActionCount int  `json:"actionCount"`
 	}{
 		Name:   strings.TrimSpace(strings.TrimSuffix(header.Filename, ".kmz")),
 		Author: mission.Author,
@@ -216,7 +218,11 @@ func (s *Server) handleInspectKMZ(w http.ResponseWriter, r *http.Request) {
 		resp.Date = mission.Date.UTC().Format(time.RFC3339)
 	}
 	for _, p := range mission.Waypoints {
-		resp.Waypoints = append(resp.Waypoints, wp{Lat: p.Lat, Lng: p.Lng})
+		has := p.HasMeaningfulAction()
+		if has {
+			resp.ActionCount++
+		}
+		resp.Waypoints = append(resp.Waypoints, wp{Lat: p.Lat, Lng: p.Lng, HasAction: has})
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

@@ -52,8 +52,9 @@ type PreviewMetadata struct {
 }
 
 type Waypoint struct {
-	Lat float64 `json:"lat"`
-	Lng float64 `json:"lng"`
+	Lat       float64 `json:"lat"`
+	Lng       float64 `json:"lng"`
+	HasAction bool    `json:"hasAction,omitempty"`
 }
 
 type LatLng struct {

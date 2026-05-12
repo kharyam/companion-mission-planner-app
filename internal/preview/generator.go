@@ -78,10 +78,15 @@ func setFontSize(dc *gg.Context, sizePx float64) {
 	_ = font.Face(face)
 }
 
-// Waypoint is the lat/lng-only view this package needs.
+// Waypoint is the lat/lng + action-flag view this package needs.
+// HasAction is true when the waypoint includes an intentional drone
+// action (takePhoto, startRecord/stopRecord, hover) — used to render
+// a distinct marker so users can see at a glance which waypoints are
+// pure navigation vs. capture stops.
 type Waypoint struct {
-	Lat float64
-	Lng float64
+	Lat       float64
+	Lng       float64
+	HasAction bool
 }
 
 // Metadata is the optional payload that drives a render. The device
@@ -243,7 +248,7 @@ func overlayWaypoints(dc *gg.Context, meta *Metadata, proj projection) {
 
 	for i, p := range meta.Waypoints {
 		x, y := proj.latLngToXY(p.Lat, p.Lng)
-		drawMarker(dc, x, y, i+1)
+		drawMarker(dc, x, y, i+1, p.HasAction)
 	}
 }
 
@@ -251,12 +256,22 @@ func overlayWaypoints(dc *gg.Context, meta *Metadata, proj projection) {
 // any background, a red KAM-brand filled center, and (for slot-preview
 // markers) the waypoint number. The KAM logo no longer lives on the
 // marker — it watermarks the full preview in overlayLogo instead.
-func drawMarker(dc *gg.Context, cx, cy float64, num int) {
+//
+// hasAction=true adds a small gold accent ring + a yellow dot in the
+// upper-right of the marker so capture/hover waypoints stand out from
+// pure navigation hops.
+func drawMarker(dc *gg.Context, cx, cy float64, num int, hasAction bool) {
 	const radius = 14.0
 	// White halo (always visible against any background).
 	dc.SetRGBA(1, 1, 1, 0.95)
 	dc.DrawCircle(cx, cy, radius+3)
 	dc.Fill()
+	// Action waypoints get a gold ring just inside the halo.
+	if hasAction {
+		dc.SetRGBA(1, 0.78, 0.10, 1)
+		dc.DrawCircle(cx, cy, radius+1.5)
+		dc.Fill()
+	}
 	// Red filled center.
 	dc.SetRGBA(1, 0.10, 0.10, 1)
 	dc.DrawCircle(cx, cy, radius)
@@ -269,6 +284,19 @@ func drawMarker(dc *gg.Context, cx, cy float64, num int) {
 		setFontSize(dc, 18)
 		dc.SetRGB(1, 1, 1)
 		dc.DrawStringAnchored(fmt.Sprintf("%d", num), cx, cy+1, 0.5, 0.45)
+	}
+
+	// Action badge: tiny gold dot tucked into the upper-right of the
+	// circle. Visible even when markers stack (tight missions).
+	if hasAction {
+		bx := cx + radius*0.55
+		by := cy - radius*0.55
+		dc.SetRGBA(0, 0, 0, 0.6) // shadow for contrast against red
+		dc.DrawCircle(bx, by, 4)
+		dc.Fill()
+		dc.SetRGBA(1, 0.85, 0.15, 1) // gold
+		dc.DrawCircle(bx, by, 3)
+		dc.Fill()
 	}
 }
 
@@ -351,7 +379,7 @@ func overlayWaypointsFallback(dc *gg.Context, meta *Metadata) {
 	for i, p := range meta.Waypoints {
 		x := pad + (p.Lng-minLng)/dLng*(float64(w)-2*pad)
 		y := pad + (1-(p.Lat-minLat)/dLat)*(float64(h)-2*pad)
-		drawMarker(dc, x, y, i+1)
+		drawMarker(dc, x, y, i+1, p.HasAction)
 	}
 }
 
