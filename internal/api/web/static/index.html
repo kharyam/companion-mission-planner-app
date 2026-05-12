@@ -67,6 +67,11 @@
         <textarea id="preview-metadata" rows="4" placeholder='{"waypoints":[{"lat":37.7749,"lng":-122.4194},{"lat":37.7849,"lng":-122.4094}]}'></textarea>
       </label>
 
+      <label class="checkbox">
+        <input type="checkbox" id="push-wp-images">
+        <span>Also push per-waypoint images <span class="dim">(zoomed satellite tile per waypoint; overwrites any existing drone photos in the slot)</span></span>
+      </label>
+
       <div class="actions">
         <button type="submit" class="primary" id="transfer-button" disabled>Transfer</button>
         <span class="dim" id="transfer-hint">pick a file to enable</span>

@@ -2,6 +2,7 @@ package device
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -238,6 +239,72 @@ func (c *mtpController) WriteKMZ(guid string, kmz io.Reader, meta *PreviewMetada
 		FileSize:      size,
 		TransferredAt: time.Now(),
 	}, nil
+}
+
+// WaypointImage is one rendered per-waypoint JPEG bound for the
+// slot's image/ subfolder.
+type WaypointImage struct {
+	Index int    // 0-based waypoint position
+	Name  string // filename, e.g. "WP_kam_3_<ts>.jpg"
+	Bytes []byte // JPEG payload
+}
+
+// WriteWaypointImages replaces the slot's image/ contents with the
+// provided per-waypoint JPEGs and a regenerated ShotSnap.json mapping
+// filename → waypoint index. Existing WP_*.jpg files are deleted so
+// DJI Fly doesn't show stale drone photos alongside our renders.
+func (c *mtpController) WriteWaypointImages(guid string, images []WaypointImage) error {
+	if err := c.locateWaypointDir(); err != nil {
+		return err
+	}
+	slotFolder, err := findChild(c.dev, c.waypointDir, guid)
+	if err != nil || slotFolder == nil {
+		return fmt.Errorf("slot %s: %w", guid, ErrSlotNotFound)
+	}
+	imageFolder, err := findChild(c.dev, slotFolder, "image")
+	if err != nil || imageFolder == nil {
+		return fmt.Errorf("slot %s has no image/ folder; DJI Fly creates it on placeholder init", guid)
+	}
+	// Delete any existing WP_*.jpg files + ShotSnap.json so we have a
+	// clean slate. Skip anything that isn't a regular file (defensive).
+	existing, err := c.dev.ListDir(imageFolder)
+	if err != nil {
+		return fmt.Errorf("list image/: %w", err)
+	}
+	for i := range existing {
+		ch := existing[i]
+		if ch.IsFolder {
+			continue
+		}
+		upper := strings.ToUpper(ch.Name)
+		if strings.HasPrefix(upper, "WP_") && strings.HasSuffix(upper, ".JPG") {
+			_ = c.dev.Delete(&ch)
+		}
+		if strings.EqualFold(ch.Name, "ShotSnap.json") {
+			_ = c.dev.Delete(&ch)
+		}
+	}
+	// Push new WP_*.jpg files.
+	for _, img := range images {
+		if _, err := c.dev.PutFile(imageFolder, img.Name, int64(len(img.Bytes)), bytes.NewReader(img.Bytes)); err != nil {
+			return fmt.Errorf("put %s: %w", img.Name, err)
+		}
+	}
+	// Build ShotSnap.json: {"POI_POINT":{},"WAY_POINT":{"WP_xxx.jpg":0,...}}.
+	shotSnap := map[string]any{"POI_POINT": map[string]any{}}
+	wayPoint := map[string]int{}
+	for _, img := range images {
+		wayPoint[img.Name] = img.Index
+	}
+	shotSnap["WAY_POINT"] = wayPoint
+	jsonBytes, err := json.Marshal(shotSnap)
+	if err != nil {
+		return err
+	}
+	if _, err := c.dev.PutFile(imageFolder, "ShotSnap.json", int64(len(jsonBytes)), bytes.NewReader(jsonBytes)); err != nil {
+		return fmt.Errorf("put ShotSnap.json: %w", err)
+	}
+	return nil
 }
 
 // ReadKMZ streams the slot's <GUID>.kmz back to the caller. Used by

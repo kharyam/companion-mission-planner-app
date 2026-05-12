@@ -387,6 +387,75 @@ func overlayAttribution(dc *gg.Context) {
 	dc.DrawString("© Esri", float64(dc.Width()-44), float64(dc.Height()-4))
 }
 
+// WaypointOptions controls per-waypoint image rendering.
+type WaypointOptions struct {
+	Width, Height int
+	HTTP          *http.Client
+	// FrameMeters is the half-side of the bbox in meters drawn around
+	// the waypoint. 30m gives a tight aerial view; bigger numbers zoom
+	// out. Defaults to 30 if zero.
+	FrameMeters float64
+}
+
+// RenderWaypoint produces a small JPEG centered on one waypoint with
+// a KAM marker and the waypoint number. Used to populate the per-
+// waypoint images inside <GUID>/image/WP_*.jpg, which DJI Fly displays
+// next to each waypoint in its mission editor.
+func RenderWaypoint(ctx context.Context, lat, lng float64, num int, opts WaypointOptions) ([]byte, error) {
+	if opts.Width == 0 {
+		opts.Width = 180
+	}
+	if opts.Height == 0 {
+		opts.Height = 135
+	}
+	if opts.FrameMeters == 0 {
+		opts.FrameMeters = 30
+	}
+	if opts.HTTP == nil {
+		opts.HTTP = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	dc := gg.NewContext(opts.Width, opts.Height)
+	// Latitude span = meters / 111320; longitude span depends on cos(lat).
+	dLat := opts.FrameMeters / 111320.0
+	dLng := opts.FrameMeters / (111320.0 * math.Cos(lat*math.Pi/180.0))
+	minLat, maxLat := lat-dLat, lat+dLat
+	minLng, maxLng := lng-dLng, lng+dLng
+
+	zoom := chooseZoom(minLat, maxLat, minLng, maxLng, float64(opts.Width), float64(opts.Height))
+	cx, cy := worldPx(lng, lat, zoom)
+	left := cx - float64(opts.Width)/2
+	top := cy - float64(opts.Height)/2
+
+	tileX0 := int(math.Floor(left / 256))
+	tileY0 := int(math.Floor(top / 256))
+	tileX1 := int(math.Floor((left + float64(opts.Width) - 1) / 256))
+	tileY1 := int(math.Floor((top + float64(opts.Height) - 1) / 256))
+	for ty := tileY0; ty <= tileY1; ty++ {
+		for tx := tileX0; tx <= tileX1; tx++ {
+			img, err := fetchTile(ctx, opts.HTTP, zoom, tx, ty)
+			if err != nil {
+				// solid backdrop fallback so we still produce a JPEG
+				dc.SetRGB(0.12, 0.16, 0.20)
+				dc.Clear()
+				goto OVERLAY
+			}
+			dx := float64(tx*256) - left
+			dy := float64(ty*256) - top
+			dc.DrawImage(img, int(dx), int(dy))
+		}
+	}
+OVERLAY:
+	// Center the marker — it represents the waypoint at lat/lng.
+	drawMarker(dc, float64(opts.Width)/2, float64(opts.Height)/2, num)
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dc.Image(), &jpeg.Options{Quality: 82}); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // --- helpers ----------------------------------------------------------------
 
 func bbox(pts []Waypoint) (minLat, maxLat, minLng, maxLng float64) {

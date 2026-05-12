@@ -153,6 +153,7 @@ async function loadSlots() {
             <span class="slot-name" data-role="name">${escapeHTML(s.name || 'Slot')}</span>
             <button type="button" class="rename-btn" title="Rename slot" data-role="rename">✎</button>
             <button type="button" class="rename-btn" title="Regenerate preview from on-device KMZ" data-role="regen">↻</button>
+            <button type="button" class="rename-btn" title="Push per-waypoint images (overwrites any drone photos)" data-role="wp">⎙</button>
           </div>
           <div class="slot-guid">${escapeHTML(s.guid)}</div>
         </div>
@@ -174,6 +175,10 @@ async function loadSlots() {
         e.stopPropagation();
         await regeneratePreview(s, e.currentTarget);
       });
+      li.querySelector('[data-role="wp"]').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await pushWaypointImages(s, e.currentTarget);
+      });
       if (state.selectedSlot?.guid === s.guid) li.classList.add('selected');
       list.appendChild(li);
     }
@@ -182,6 +187,26 @@ async function loadSlots() {
     toast('bad', 'Could not list slots', e.message || e.code);
   } finally {
     $('slots-panel').classList.remove('loading');
+  }
+}
+
+// ---------- push waypoint images ----------
+
+async function pushWaypointImages(slot, btn) {
+  const original = btn.textContent;
+  btn.textContent = '⋯';
+  btn.disabled = true;
+  try {
+    const body = await api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(slot.guid)}/waypoint-images`, {
+      method: 'POST',
+    });
+    toast('ok', `Pushed ${body.count} waypoint image${body.count === 1 ? '' : 's'}`,
+      'Visible in DJI Fly mission editor next to each waypoint');
+  } catch (err) {
+    toast('bad', err.code || 'Push failed', err.message || JSON.stringify(err));
+  } finally {
+    btn.textContent = original;
+    btn.disabled = false;
   }
 }
 
@@ -347,6 +372,10 @@ async function submitTransfer(e) {
       toast('bad', 'previewMetadata is not valid JSON', err.message);
       return;
     }
+  }
+
+  if ($('push-wp-images').checked) {
+    fd.append('pushWaypointImages', 'true');
   }
 
   const btn = $('transfer-button');

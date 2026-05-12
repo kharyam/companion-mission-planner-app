@@ -428,6 +428,27 @@ main {
   border-color: var(--red);
 }
 
+.checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  padding: 8px 0;
+  user-select: none;
+}
+.checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  cursor: pointer;
+  accent-color: var(--red);
+  flex-shrink: 0;
+}
+.checkbox span {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .actions {
   display: flex;
   align-items: center;

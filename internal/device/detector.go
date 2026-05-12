@@ -272,6 +272,59 @@ type KMZReader interface {
 	ReadKMZ(guid string, w io.Writer) error
 }
 
+// WaypointImageWriter is implemented by controllers that can populate
+// the slot's per-waypoint image/ folder.
+type WaypointImageWriter interface {
+	WriteWaypointImages(guid string, images []WaypointImage) error
+}
+
+// PushWaypointImages pulls the slot's KMZ, renders a small satellite
+// tile per waypoint, and writes them all into the slot's image/
+// folder along with a regenerated ShotSnap.json index. Returns the
+// number of waypoints whose images were pushed.
+func (r *Registry) PushWaypointImages(ctx context.Context, deviceID, guid string) (int, error) {
+	if err := r.Refresh(ctx); err != nil {
+		return 0, err
+	}
+	c, err := r.Lookup(deviceID)
+	if err != nil {
+		return 0, err
+	}
+	puller, ok := c.(KMZReader)
+	if !ok {
+		return 0, fmt.Errorf("controller does not support KMZ read")
+	}
+	writer, ok := c.(WaypointImageWriter)
+	if !ok {
+		return 0, fmt.Errorf("controller does not support waypoint image write")
+	}
+	var kmzBuf bytes.Buffer
+	if err := puller.ReadKMZ(guid, &kmzBuf); err != nil {
+		return 0, fmt.Errorf("read kmz: %w", err)
+	}
+	mission, err := kmz.ExtractMission(bytes.NewReader(kmzBuf.Bytes()), int64(kmzBuf.Len()))
+	if err != nil {
+		return 0, fmt.Errorf("parse kmz: %w", err)
+	}
+
+	ts := time.Now().UnixMilli()
+	images := make([]WaypointImage, 0, len(mission.Waypoints))
+	for i, wp := range mission.Waypoints {
+		jpg, err := preview.RenderWaypoint(ctx, wp.Lat, wp.Lng, i+1, preview.WaypointOptions{})
+		if err != nil {
+			return i, fmt.Errorf("render waypoint %d: %w", i+1, err)
+		}
+		// Pretend-millis-style naming, prefixed so we recognize our own
+		// files (and so DJI Fly's collision detection sees them as new).
+		name := fmt.Sprintf("WP_kam_%d_%d.jpg", i, ts+int64(i))
+		images = append(images, WaypointImage{Index: i, Name: name, Bytes: jpg})
+	}
+	if err := writer.WriteWaypointImages(guid, images); err != nil {
+		return 0, err
+	}
+	return len(images), nil
+}
+
 // SetSlotName persists a user-assigned name for a slot.
 func (r *Registry) SetSlotName(deviceID, guid, name string) error {
 	if r.names == nil {

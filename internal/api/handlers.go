@@ -130,6 +130,18 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Optional: push per-waypoint images right after the KMZ + main
+	// preview. Triggered by the UI checkbox; off by default so the
+	// transfer stays fast unless the user wants the extras.
+	pushWP := strings.EqualFold(strings.TrimSpace(r.FormValue("pushWaypointImages")), "true")
+	if pushWP {
+		if n, perr := s.registry.PushWaypointImages(r.Context(), deviceID, guid); perr != nil {
+			s.logger.Warn("waypoint images push failed", "guid", guid, "err", perr)
+		} else {
+			s.logger.Info("waypoint images pushed", "guid", guid, "count", n)
+		}
+	}
+
 	s.broadcast(Event{Type: "transfer.completed", Device: deviceID, Slot: guid, At: time.Now()})
 	writeJSON(w, http.StatusOK, res)
 }
@@ -266,6 +278,31 @@ func (s *Server) handleRegeneratePreview(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deviceId": deviceID,
 		"guid":     guid,
+		"ok":       true,
+		"at":       time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// handlePushWaypointImages renders one small satellite tile per
+// waypoint and writes them into the slot's image/ folder, along with
+// a regenerated ShotSnap.json. DJI Fly displays these next to each
+// waypoint in its mission editor.
+func (s *Server) handlePushWaypointImages(w http.ResponseWriter, r *http.Request) {
+	deviceID := pathParam(r, "deviceId")
+	guid := pathParam(r, "guid")
+	if !kmz.IsValidGUID(guid) {
+		writeError(w, http.StatusBadRequest, CodeInvalidGUID, "guid is malformed", map[string]any{"guid": guid})
+		return
+	}
+	n, err := s.registry.PushWaypointImages(r.Context(), deviceID, guid)
+	if err != nil {
+		s.handleRegistryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deviceId": deviceID,
+		"guid":     guid,
+		"count":    n,
 		"ok":       true,
 		"at":       time.Now().UTC().Format(time.RFC3339),
 	})
