@@ -246,13 +246,18 @@ func overlayWaypoints(dc *gg.Context, meta *Metadata, proj projection) {
 	}
 }
 
-// drawMarker renders one waypoint marker: black filled circle with a
-// thin red outline, the waypoint number prominent in the center, and
-// a tiny KAM logo tucked into the upper-right of the circle.
+// drawMarker renders one waypoint marker: an outer white halo for
+// contrast against busy/dark map tiles, a thin red outline, a black
+// filled center, the waypoint number large and centered, and a tiny
+// KAM logo tucked into the upper-right corner.
 func drawMarker(dc *gg.Context, cx, cy float64, num int) {
-	const radius = 16.0
-	// Outline ring (red) for visual separation from the map background.
-	dc.SetRGBA(1, 0.10, 0.10, 0.95)
+	const radius = 20.0
+	// White halo (always visible against any background).
+	dc.SetRGBA(1, 1, 1, 0.95)
+	dc.DrawCircle(cx, cy, radius+3)
+	dc.Fill()
+	// Red ring for KAM branding.
+	dc.SetRGBA(1, 0.10, 0.10, 1)
 	dc.DrawCircle(cx, cy, radius+1.5)
 	dc.Fill()
 	// Black filled center.
@@ -260,23 +265,21 @@ func drawMarker(dc *gg.Context, cx, cy float64, num int) {
 	dc.DrawCircle(cx, cy, radius)
 	dc.Fill()
 
-	// Logo in the upper-right of the circle. Scale to ~22% of radius.
+	// Logo in the upper-right of the circle.
 	if img := kamLogo(); img != nil {
-		const logoH = 9.0
+		const logoH = 12.0
 		ratio := float64(img.Bounds().Dx()) / float64(img.Bounds().Dy())
 		logoW := logoH * ratio
-		// Position: tucked just inside the upper-right edge.
-		offX := radius * 0.30
+		offX := radius * 0.35
 		offY := -radius * 0.55
 		scaled := scaleImage(img, int(logoW), int(logoH))
-		// gg DrawImageAnchored takes pixel coords for the anchor point.
 		dc.DrawImageAnchored(scaled, int(cx+offX), int(cy+offY), 0.5, 0.5)
 	}
 
 	// Number, large and centered.
-	setFontSize(dc, 16)
+	setFontSize(dc, 22)
 	dc.SetRGB(1, 1, 1)
-	dc.DrawStringAnchored(fmt.Sprintf("%d", num), cx, cy+1, 0.5, 0.45)
+	dc.DrawStringAnchored(fmt.Sprintf("%d", num), cx, cy+2, 0.5, 0.45)
 }
 
 // scaleImage is a tiny nearest-neighbor scaler that's good enough for
@@ -342,27 +345,34 @@ func overlayText(dc *gg.Context, meta *Metadata) {
 	if meta.Name == "" && meta.Date.IsZero() {
 		return
 	}
-	// Strip + fonts ~2.5x the previous values. At 500x300 the strip is
-	// ~110px tall (was ~44px); the name reads at 30px and the date at
-	// 18px, both easily legible at thumbnail viewing distance.
-	nameSize := 30.0
-	dateSize := 18.0
-	stripH := nameSize + dateSize + 24
-	if h := float64(dc.Height()); stripH > h*0.55 {
-		// Cap so the strip never eats more than 55% of the canvas on
-		// tiny non-default sizes.
-		stripH = h * 0.55
-		nameSize = stripH * 0.42
-		dateSize = stripH * 0.25
+	// Strip + fonts sized for at-a-glance legibility on the controller.
+	// 50px name, 22px date; strip auto-sized to fit. Capped at 65% of
+	// canvas height so a custom small render doesn't get drowned.
+	nameSize := 50.0
+	dateSize := 22.0
+	stripH := nameSize + dateSize + 28
+	if h := float64(dc.Height()); stripH > h*0.65 {
+		stripH = h * 0.65
+		nameSize = stripH * 0.46
+		dateSize = stripH * 0.22
 	}
 	dc.SetRGBA(0, 0, 0, 0.7)
 	dc.DrawRectangle(0, float64(dc.Height())-stripH, float64(dc.Width()), stripH)
 	dc.Fill()
 	dc.SetRGB(1, 1, 1)
 	const leftPad = 14.0
+	maxTextWidth := float64(dc.Width()) - 2*leftPad
 	if meta.Name != "" {
-		setFontSize(dc, nameSize)
-		dc.DrawString(meta.Name, leftPad, float64(dc.Height())-stripH+nameSize+6)
+		// Shrink font until the name fits horizontally. We never want
+		// to truncate the slot name — a smaller render is still
+		// readable; "Verificatio" with a cut-off "n" isn't.
+		size := nameSize
+		setFontSize(dc, size)
+		for w, _ := dc.MeasureString(meta.Name); w > maxTextWidth && size > 14; w, _ = dc.MeasureString(meta.Name) {
+			size *= 0.92
+			setFontSize(dc, size)
+		}
+		dc.DrawString(meta.Name, leftPad, float64(dc.Height())-stripH+size+6)
 	}
 	if !meta.Date.IsZero() {
 		setFontSize(dc, dateSize)
