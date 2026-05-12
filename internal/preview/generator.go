@@ -504,13 +504,12 @@ func RenderWaypoint(ctx context.Context, lat, lng float64, num int, hasAction bo
 	}
 OVERLAY:
 	_ = num
-	// Action waypoints get a 70%-opaque gold wash over the upper-right
-	// quadrant. A small corner badge couldn't survive DJI Fly's crop
-	// of the 180x135 thumbnail down to whatever its editor displays;
-	// a quarter-image tint always shows at least partially regardless
-	// of how DJI Fly crops or zooms.
+	// Action waypoints get a 70%-opaque gold banner across the top
+	// edge of the image. A horizontal stripe survives DJI Fly's
+	// editor crop better than a corner badge and visually flags
+	// the image without obscuring the satellite tile underneath.
 	if hasAction {
-		drawActionQuadrant(dc)
+		drawActionBanner(dc)
 	}
 
 	var buf bytes.Buffer
@@ -520,16 +519,15 @@ OVERLAY:
 	return buf.Bytes(), nil
 }
 
-// drawActionQuadrant fills the upper-right quarter of the canvas with
-// semi-opaque gold so it reads as "action" regardless of DJI Fly's
-// downscale or crop. Alpha 0.7 — more opaque than transparent so the
-// quadrant clearly stands out, but still lets the satellite tile show
-// through enough that the user can see the location underneath.
-func drawActionQuadrant(dc *gg.Context) {
+// drawActionBanner fills a thin gold stripe across the very top of the
+// canvas (5% of canvas height). Alpha 0.7 — opaque enough to flag the
+// thumbnail without burying the satellite tile underneath.
+func drawActionBanner(dc *gg.Context) {
 	w := float64(dc.Width())
 	h := float64(dc.Height())
+	bannerH := h * 0.05
 	dc.SetRGBA(1, 0.78, 0.10, 0.7)
-	dc.DrawRectangle(w/2, 0, w/2, h/2)
+	dc.DrawRectangle(0, 0, w, bannerH)
 	dc.Fill()
 }
 
