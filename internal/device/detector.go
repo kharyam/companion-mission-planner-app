@@ -129,23 +129,28 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			if !isDJI(md) {
 				continue
 			}
-			// First check: do we already have an open handle for this
-			// physical bus/dev pair? List() returns fresh USB-level
-			// identifiers like "usb:1-29"; if a previous Refresh saw
-			// the same hardware it should be findable.
 			usbID := md.Identifier
+			// Reuse an existing handle only if it still works — another
+			// process opening MTP (e.g. our own probe-cat) can quietly
+			// invalidate libmtp's USB claim, after which LIBMTP_Get_Storage
+			// returns 0 entries with no error. We sniff for that and
+			// fall through to a clean re-open.
 			if existing := r.findOpenByUSB(usbID); existing != nil {
-				seen[existing.Identifier] = true
-				if _, dup := r.devices[existing.Identifier]; !dup {
-					r.devices[existing.Identifier] = newMTPController(existing, r.logger)
+				if mtpHandleAlive(existing) {
+					seen[existing.Identifier] = true
+					if _, dup := r.devices[existing.Identifier]; !dup {
+						r.devices[existing.Identifier] = newMTPController(existing, r.logger)
+					}
+					continue
 				}
-				continue
+				r.logger.Info("MTP handle stale, reopening", "id", existing.Identifier)
+				_ = existing.Close()
+				delete(r.openMTP, existing.Identifier)
 			}
 			if err := r.mtpClient.Open(md); err != nil {
 				r.logger.Warn("mtp open failed", "id", usbID, "err", err)
 				continue
 			}
-			// After Open, md.Identifier is the real PTP serial.
 			seen[md.Identifier] = true
 			r.openMTP[md.Identifier] = md
 			r.devices[md.Identifier] = newMTPController(md, r.logger)
@@ -231,6 +236,19 @@ func (r *Registry) applySavedNames(deviceID string, slots []Slot) []Slot {
 		}
 	}
 	return slots
+}
+
+// mtpHandleAlive cheaply probes whether a previously-opened libmtp
+// handle is still usable. We list storages (root level) and check
+// that we got at least one back. When another process steals the USB
+// interface from libmtp mid-session, this call silently returns zero
+// storages with no error — that's our cue to reopen.
+func mtpHandleAlive(d *mtp.Device) bool {
+	storages, err := d.ListDir(nil)
+	if err != nil {
+		return false
+	}
+	return len(storages) > 0
 }
 
 // isDJI filters MTP devices down to DJI hardware by USB vendor ID.
