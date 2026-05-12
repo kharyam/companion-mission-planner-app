@@ -131,8 +131,11 @@ func newListDevicesCmd() *cobra.Command {
 				return nil
 			}
 			for _, d := range devs {
-				fmt.Printf("%s\t%s\t%s\tauthorized=%t\tdji-fly=%t\n",
-					d.ID, d.Model, d.ConnectionType, d.Authorized, d.DJIFlyDetected)
+				fmt.Printf("%s\t%s\tstate=%s\tauthorized=%t\tdji-fly=%t\n",
+					d.ID, d.Model, d.State, d.Authorized, d.DJIFlyDetected)
+				if d.Hint != "" {
+					fmt.Printf("  hint: %s\n", d.Hint)
+				}
 			}
 			return nil
 		},

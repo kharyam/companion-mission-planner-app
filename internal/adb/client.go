@@ -47,17 +47,13 @@ func (c *Client) ListDevices() ([]*Device, error) {
 	}
 	devs := make([]*Device, 0, len(infos))
 	for _, info := range infos {
-		state := StateUnknown
-		dev := c.t.adb.Device(goadb.DeviceWithSerial(info.Serial))
-		if st, err := dev.State(); err == nil {
-			state = mapState(st)
+		handle := &Device{Serial: info.Serial, Model: info.Model, t: c.t}
+		if st, err := handle.RawState(); err == nil {
+			handle.State = st
+		} else {
+			handle.State = StateUnknown
 		}
-		devs = append(devs, &Device{
-			Serial: info.Serial,
-			State:  state,
-			Model:  info.Model,
-			t:      c.t,
-		})
+		devs = append(devs, handle)
 	}
 	return devs, nil
 }
@@ -124,12 +120,39 @@ func (d *Device) Shell(cmd string) (string, error) {
 
 // Authorized reports whether the device is in `device` state.
 func (d *Device) Authorized() (bool, error) {
-	dev := d.t.adb.Device(goadb.DeviceWithSerial(d.Serial))
-	st, err := dev.State()
+	st, err := d.RawState()
 	if err != nil {
 		return false, err
 	}
-	return mapState(st) == StateDevice, nil
+	return st == StateDevice, nil
+}
+
+// RawState queries the live adb state for this device, bypassing any
+// cached value on the Device handle.
+//
+// goadb's State() returns an error (not a state) for several
+// non-online conditions. Its top-level .Error() string drops the
+// underlying message, so we walk the cause chain to recover it and
+// also check structured error codes.
+func (d *Device) RawState() (DeviceState, error) {
+	dev := d.t.adb.Device(goadb.DeviceWithSerial(d.Serial))
+	st, err := dev.State()
+	if err == nil {
+		return mapState(st), nil
+	}
+	if goadb.HasErrCode(err, goadb.DeviceNotFound) {
+		return StateOffline, nil
+	}
+	chain := strings.ToLower(goadb.ErrorWithCauseChain(err))
+	switch {
+	case strings.Contains(chain, "unauthorized"):
+		return StateUnauthorized, nil
+	case strings.Contains(chain, "offline"):
+		return StateOffline, nil
+	case strings.Contains(chain, "no devices") || strings.Contains(chain, "device not found"):
+		return StateOffline, nil
+	}
+	return StateUnknown, err
 }
 
 // HasDJIFly checks whether the DJI Fly waypoint folder exists.

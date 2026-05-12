@@ -19,7 +19,9 @@ type Info struct {
 	Model          string         `json:"model"`
 	ConnectionType ConnectionType `json:"connectionType"`
 	Authorized     bool           `json:"authorized"`
+	State          string         `json:"state"` // "online" | "offline" | "unauthorized" | "unknown"
 	DJIFlyDetected bool           `json:"djiFlyDetected"`
+	Hint           string         `json:"hint,omitempty"` // human-readable next step for KAM to display
 }
 
 // Slot is a single waypoint slot on a device.

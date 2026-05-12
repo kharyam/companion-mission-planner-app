@@ -258,14 +258,32 @@ func newADBController(d *adb.Device, logger *slog.Logger) *adbController {
 
 func (c *adbController) Info() Info {
 	auth, _ := c.dev.Authorized()
-	dji, _ := c.dev.HasDJIFly()
-	return Info{
+	state := string(c.dev.State)
+	if !auth {
+		// Refresh state in case the cached value is stale.
+		if st, err := c.dev.RawState(); err == nil {
+			state = string(st)
+			c.dev.State = st
+		}
+	}
+	info := Info{
 		ID:             c.dev.Serial,
 		Model:          modelLabel(c.dev),
 		ConnectionType: ConnADB,
 		Authorized:     auth,
-		DJIFlyDetected: dji,
+		State:          state,
 	}
+	if auth {
+		info.DJIFlyDetected, _ = c.dev.HasDJIFly()
+	} else {
+		switch state {
+		case string(adb.StateUnauthorized):
+			info.Hint = "USB debugging authorization required: tap 'Allow' on the controller screen."
+		case string(adb.StateOffline):
+			info.Hint = "Controller is offline. Approve USB debugging on the device, or unplug + replug if no prompt appears."
+		}
+	}
+	return info
 }
 
 func (c *adbController) ListSlots() ([]Slot, error) {
