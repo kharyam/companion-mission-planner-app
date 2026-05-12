@@ -41,11 +41,14 @@ type Metadata struct {
 // Tile server template. {z}, {y}, {x} are substituted at fetch time.
 const esriTileURL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/%d/%d/%d"
 
-// Default render settings. Override via Options.
+// Default render settings. Match DJI Fly's own slot-preview JPEGs:
+// 500x300, aspect 5:3. We tested 1024x768 first and DJI Fly silently
+// ignored it (either size mismatch rejection or aggressive caching).
+// Sticking to Fly's native dimensions is the safe path.
 const (
-	DefaultWidth   = 1024
-	DefaultHeight  = 768
-	DefaultPadding = 64
+	DefaultWidth   = 500
+	DefaultHeight  = 300
+	DefaultPadding = 30
 )
 
 type Options struct {
@@ -240,21 +243,27 @@ func overlayText(dc *gg.Context, meta *Metadata) {
 	if meta.Name == "" && meta.Date.IsZero() {
 		return
 	}
-	dc.SetRGBA(0, 0, 0, 0.55)
-	dc.DrawRectangle(0, float64(dc.Height()-80), float64(dc.Width()), 80)
+	// Scale the strip height to the canvas — 500x300 gets a 44px strip;
+	// 1024x768 gets a proportionally taller one.
+	stripH := float64(dc.Height()) * 0.15
+	if stripH < 36 {
+		stripH = 36
+	}
+	dc.SetRGBA(0, 0, 0, 0.6)
+	dc.DrawRectangle(0, float64(dc.Height())-stripH, float64(dc.Width()), stripH)
 	dc.Fill()
 	dc.SetRGB(1, 1, 1)
 	if meta.Name != "" {
-		dc.DrawString(meta.Name, 24, float64(dc.Height()-44))
+		dc.DrawString(meta.Name, 10, float64(dc.Height())-stripH+16)
 	}
 	if !meta.Date.IsZero() {
-		dc.DrawString(meta.Date.Format("2006-01-02 15:04"), 24, float64(dc.Height()-20))
+		dc.DrawString(meta.Date.Format("2006-01-02 15:04"), 10, float64(dc.Height())-8)
 	}
 }
 
 func overlayAttribution(dc *gg.Context) {
 	dc.SetRGBA(0, 0, 0, 0.6)
-	dc.DrawString("Imagery © Esri  ·  KAM Mission Planner", float64(dc.Width()-360), float64(dc.Height()-6))
+	dc.DrawString("© Esri", float64(dc.Width()-50), float64(dc.Height()-4))
 }
 
 // --- helpers ----------------------------------------------------------------

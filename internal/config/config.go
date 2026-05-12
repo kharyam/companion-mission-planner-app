@@ -88,8 +88,8 @@ func Default() *Config {
 		Map: MapConfig{
 			Provider: "esri-world-imagery",
 			TileSize: 256,
-			Width:    1024,
-			Height:   768,
+			Width:    500,
+			Height:   300,
 		},
 		ADB: ADBConfig{
 			ServerHost: "127.0.0.1",
