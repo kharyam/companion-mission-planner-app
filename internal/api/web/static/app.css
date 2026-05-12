@@ -261,6 +261,41 @@ main {
   word-break: break-all;
 }
 
+.slot-info { flex: 1 1 auto; }
+
+.slot-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rename-btn {
+  background: transparent;
+  color: var(--text-faint);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 13px;
+  line-height: 1;
+  transition: color 120ms ease, background 120ms ease;
+}
+.rename-btn:hover {
+  color: var(--red);
+  background: rgba(255, 0, 0, 0.08);
+}
+
+.slot-name-edit {
+  background: #050505;
+  border: 1px solid var(--red);
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  outline: none;
+  width: 70%;
+}
+
 .dev-name, .slot-name {
   font-weight: 500;
   font-size: 14px;

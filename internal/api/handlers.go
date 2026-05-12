@@ -209,6 +209,45 @@ func (s *Server) handleInspectKMZ(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleSetSlotName persists a user-assigned name. The slot's GUID
+// doesn't actually have to exist on the device — names are stored
+// host-side, so the user can pre-name a slot before plugging in.
+func (s *Server) handleSetSlotName(w http.ResponseWriter, r *http.Request) {
+	deviceID := pathParam(r, "deviceId")
+	guid := pathParam(r, "guid")
+	if !kmz.IsValidGUID(guid) {
+		writeError(w, http.StatusBadRequest, CodeInvalidGUID, "guid is malformed", map[string]any{"guid": guid})
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "body must be {\"name\":\"...\"}", nil)
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	if err := s.registry.SetSlotName(deviceID, guid, body.Name); err != nil {
+		writeError(w, http.StatusInternalServerError, CodeInternalError, err.Error(), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deviceId": deviceID, "guid": guid, "name": body.Name})
+}
+
+func (s *Server) handleClearSlotName(w http.ResponseWriter, r *http.Request) {
+	deviceID := pathParam(r, "deviceId")
+	guid := pathParam(r, "guid")
+	if !kmz.IsValidGUID(guid) {
+		writeError(w, http.StatusBadRequest, CodeInvalidGUID, "guid is malformed", map[string]any{"guid": guid})
+		return
+	}
+	if err := s.registry.SetSlotName(deviceID, guid, ""); err != nil {
+		writeError(w, http.StatusInternalServerError, CodeInternalError, err.Error(), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deviceId": deviceID, "guid": guid, "name": ""})
+}
+
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if err := s.registry.Refresh(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, CodeInternalError, err.Error(), nil)

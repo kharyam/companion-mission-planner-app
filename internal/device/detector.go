@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/kamdynamics/kam-transfer/internal/adb"
 	"github.com/kamdynamics/kam-transfer/internal/config"
 	"github.com/kamdynamics/kam-transfer/internal/mtp"
+	"github.com/kamdynamics/kam-transfer/internal/names"
 	"github.com/kamdynamics/kam-transfer/internal/preview"
 )
 
@@ -45,12 +47,20 @@ type Registry struct {
 
 	// previewEnabled gates ESRI fetches. Set from cfg.Map.Provider.
 	previewEnabled bool
+
+	// names is the host-side cache of user-set slot names. Optional;
+	// nil means "no overrides, use whatever the controller returns".
+	names *names.Store
 }
 
 // NewRegistry creates a registry. It does not start polling; the API
 // server triggers refreshes on demand and on websocket subscription.
 func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 	previewEnabled := cfg.Map.Provider == "esri-world-imagery"
+	store, err := names.New(slotNamesPath(cfg))
+	if err != nil {
+		logger.Warn("slot-name store unavailable", "err", err)
+	}
 	r := &Registry{
 		cfg:            cfg,
 		logger:         logger,
@@ -58,6 +68,7 @@ func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 		mtpClient:      mtp.New(),
 		openMTP:        map[string]*mtp.Device{},
 		previewEnabled: previewEnabled,
+		names:          store,
 	}
 	t, err := adb.Dial(cfg.ADB.ServerHost, cfg.ADB.ServerPort)
 	if err != nil {
@@ -182,6 +193,40 @@ func (r *Registry) findOpenByUSB(_ string) *mtp.Device {
 	return nil
 }
 
+// slotNamesPath derives the slot-name sidecar location from the
+// config path. We sit it next to config.yaml so a user backing up one
+// gets the other automatically.
+func slotNamesPath(cfg *config.Config) string {
+	cfgPath, err := config.DefaultPath()
+	if err != nil || cfg == nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(cfgPath), "slot-names.json")
+}
+
+// SetSlotName persists a user-assigned name for a slot.
+func (r *Registry) SetSlotName(deviceID, guid, name string) error {
+	if r.names == nil {
+		return fmt.Errorf("name store unavailable")
+	}
+	return r.names.Set(deviceID, guid, name)
+}
+
+// applySavedNames overlays user-set names onto the slot list. The
+// controller returns its default ("Slot XXXXXXXX"); we replace with
+// whatever the user assigned, if anything.
+func (r *Registry) applySavedNames(deviceID string, slots []Slot) []Slot {
+	if r.names == nil {
+		return slots
+	}
+	for i := range slots {
+		if n := r.names.Get(deviceID, slots[i].GUID); n != "" {
+			slots[i].Name = n
+		}
+	}
+	return slots
+}
+
 // isDJI filters MTP devices down to DJI hardware by USB vendor ID.
 // 0x2ca3 is DJI Technology Co., Ltd. Other vendors detected over MTP
 // (random Android phones, cameras) aren't useful for this app.
@@ -274,7 +319,11 @@ func (r *Registry) ListSlots(ctx context.Context, deviceID string) ([]Slot, erro
 	if err != nil {
 		return nil, err
 	}
-	return c.ListSlots()
+	slots, err := c.ListSlots()
+	if err != nil {
+		return nil, err
+	}
+	return r.applySavedNames(deviceID, slots), nil
 }
 
 func (r *Registry) Transfer(ctx context.Context, deviceID, guid, name string, kmz io.Reader) (*TransferResult, error) {
@@ -295,6 +344,13 @@ func (r *Registry) TransferWithMeta(ctx context.Context, deviceID, guid string, 
 	res, err := c.WriteKMZ(guid, kmz, meta)
 	if err != nil {
 		return nil, err
+	}
+	// Persist user-assigned name so subsequent slot listings (and the
+	// next preview render) reflect it.
+	if meta != nil && meta.Name != "" && r.names != nil {
+		if perr := r.names.Set(deviceID, guid, meta.Name); perr != nil {
+			r.logger.Warn("could not save slot name", "guid", guid, "err", perr)
+		}
 	}
 	if r.previewEnabled && meta != nil && len(meta.Waypoints) > 0 {
 		if perr := r.uploadPreview(ctx, c, guid, meta); perr != nil {

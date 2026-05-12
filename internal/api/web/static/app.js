@@ -142,8 +142,11 @@ async function loadSlots() {
       const li = document.createElement('li');
       li.dataset.guid = s.guid;
       li.innerHTML = `
-        <div>
-          <div class="slot-name">${escapeHTML(s.name || 'Slot')}</div>
+        <div class="slot-info">
+          <div class="slot-name-row">
+            <span class="slot-name" data-role="name">${escapeHTML(s.name || 'Slot')}</span>
+            <button type="button" class="rename-btn" title="Rename slot" data-role="rename">✎</button>
+          </div>
           <div class="slot-guid">${escapeHTML(s.guid)}</div>
         </div>
         <div class="slot-meta">
@@ -152,7 +155,15 @@ async function loadSlots() {
           ${s.previewAvailable ? '<span class="badge ok">preview</span>' : '<span class="badge bad">no preview</span>'}
         </div>
       `;
-      li.addEventListener('click', () => selectSlot(s));
+      li.addEventListener('click', (e) => {
+        // pencil click handled separately
+        if (e.target.dataset?.role === 'rename') return;
+        selectSlot(s);
+      });
+      li.querySelector('[data-role="rename"]').addEventListener('click', (e) => {
+        e.stopPropagation();
+        startRename(li, s);
+      });
       if (state.selectedSlot?.guid === s.guid) li.classList.add('selected');
       list.appendChild(li);
     }
@@ -162,6 +173,57 @@ async function loadSlots() {
   } finally {
     $('slots-panel').classList.remove('loading');
   }
+}
+
+// ---------- rename ----------
+
+function startRename(li, slot) {
+  const nameEl = li.querySelector('[data-role="name"]');
+  const current = nameEl.textContent;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = current;
+  input.className = 'slot-name-edit';
+  input.maxLength = 80;
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let resolved = false;
+  const finish = async (save) => {
+    if (resolved) return;
+    resolved = true;
+    const newName = input.value.trim();
+    const restore = document.createElement('span');
+    restore.className = 'slot-name';
+    restore.dataset.role = 'name';
+    restore.textContent = save ? (newName || 'Slot') : current;
+    input.replaceWith(restore);
+    if (!save || newName === current) return;
+    try {
+      if (newName) {
+        await api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(slot.guid)}/name`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: newName }),
+        });
+      } else {
+        await api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(slot.guid)}/name`, {
+          method: 'DELETE',
+        });
+      }
+      toast('ok', 'Slot renamed', newName || '(cleared)');
+      slot.name = newName; // local cache
+    } catch (err) {
+      toast('bad', 'Rename failed', err.message || err.code);
+      restore.textContent = current;
+    }
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
 }
 
 function selectSlot(s) {
