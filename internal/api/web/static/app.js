@@ -589,6 +589,22 @@ async function submitTransfer(e) {
   btn.textContent = 'Transferring';
   $('transfer-hint').textContent = `${state.file.name} → ${state.selectedSlot.guid.slice(0, 8)}…`;
 
+  const stagedFile = state.file;
+  const stagedSlot = state.selectedSlot;
+  const stagedDevice = state.selectedDevice;
+
+  // Non-dismissable modal blocks UI while bytes are in flight. MTP is
+  // serialized through a mutex so concurrent UI clicks would just
+  // queue, but giving the user no clickable surface during the upload
+  // makes the active state obvious.
+  const modal = openWorkingModal(
+    'Transferring KMZ',
+    `${stagedFile.name} → ${stagedSlot.guid.slice(0, 8)}`,
+  );
+  if ($('push-wp-images').checked) {
+    modal.setProgress('Also queuing 8× per-waypoint image push…');
+  }
+
   const startedAt = performance.now();
   try {
     const res = await fetch(url, { method: 'POST', body: fd });
@@ -598,10 +614,11 @@ async function submitTransfer(e) {
       throw err;
     }
     const elapsed = Math.round(performance.now() - startedAt);
+    modal.close();
     showModal('ok', 'Transfer complete', {
-      File: state.file.name,
-      Slot: state.selectedSlot.guid,
-      'Device': state.selectedDevice.id,
+      File: stagedFile.name,
+      Slot: stagedSlot.guid,
+      'Device': stagedDevice.id,
       Size: bytesHuman(body.fileSize),
       Elapsed: `${elapsed} ms`,
       At: body.transferredAt || new Date().toISOString(),
@@ -609,10 +626,11 @@ async function submitTransfer(e) {
     resetTransferForm();
     await loadSlots();
   } catch (err) {
+    modal.close();
     showModal('bad', err.code || 'Transfer failed', {
       Reason: err.message || JSON.stringify(err),
-      Slot: state.selectedSlot.guid,
-      File: state.file?.name || '(none)',
+      Slot: stagedSlot.guid,
+      File: stagedFile?.name || '(none)',
     });
   } finally {
     btn.classList.remove('loading');

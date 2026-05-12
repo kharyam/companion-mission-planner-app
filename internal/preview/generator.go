@@ -257,23 +257,23 @@ func overlayWaypoints(dc *gg.Context, meta *Metadata, proj projection) {
 // markers) the waypoint number. The KAM logo no longer lives on the
 // marker — it watermarks the full preview in overlayLogo instead.
 //
-// hasAction=true adds a small gold accent ring + a yellow dot in the
-// upper-right of the marker so capture/hover waypoints stand out from
-// pure navigation hops.
+// hasAction=true paints the marker GOLD (instead of red) AND drops a
+// bigger gold circle with a black outline into the upper-right corner.
+// The corner badge is the dominant indicator; the fill swap is the
+// fallback so the marker still reads "action" when thumbnails are
+// downscaled past the badge's resolvable size.
 func drawMarker(dc *gg.Context, cx, cy float64, num int, hasAction bool) {
-	const radius = 14.0
+	const radius = 16.0
 	// White halo (always visible against any background).
 	dc.SetRGBA(1, 1, 1, 0.95)
 	dc.DrawCircle(cx, cy, radius+3)
 	dc.Fill()
-	// Action waypoints get a gold ring just inside the halo.
+	// Filled center: gold for action waypoints, KAM red for nav.
 	if hasAction {
 		dc.SetRGBA(1, 0.78, 0.10, 1)
-		dc.DrawCircle(cx, cy, radius+1.5)
-		dc.Fill()
+	} else {
+		dc.SetRGBA(1, 0.10, 0.10, 1)
 	}
-	// Red filled center.
-	dc.SetRGBA(1, 0.10, 0.10, 1)
 	dc.DrawCircle(cx, cy, radius)
 	dc.Fill()
 
@@ -282,21 +282,33 @@ func drawMarker(dc *gg.Context, cx, cy float64, num int, hasAction bool) {
 	// these markers also work fine as plain pins).
 	if num > 0 {
 		setFontSize(dc, 18)
-		dc.SetRGB(1, 1, 1)
+		// Black on gold (readable) vs white on red.
+		if hasAction {
+			dc.SetRGB(0, 0, 0)
+		} else {
+			dc.SetRGB(1, 1, 1)
+		}
 		dc.DrawStringAnchored(fmt.Sprintf("%d", num), cx, cy+1, 0.5, 0.45)
 	}
 
-	// Action badge: tiny gold dot tucked into the upper-right of the
-	// circle. Visible even when markers stack (tight missions).
+	// Big action badge: gold filled circle with a black outline in the
+	// upper-right corner, sized so it survives 5x downscaling to a
+	// list-card thumbnail. ~28% of marker radius wide.
 	if hasAction {
-		bx := cx + radius*0.55
-		by := cy - radius*0.55
-		dc.SetRGBA(0, 0, 0, 0.6) // shadow for contrast against red
-		dc.DrawCircle(bx, by, 4)
+		bx := cx + radius*0.70
+		by := cy - radius*0.70
+		const badgeR = 7.0
+		dc.SetRGBA(0, 0, 0, 1) // outline
+		dc.DrawCircle(bx, by, badgeR+1)
 		dc.Fill()
 		dc.SetRGBA(1, 0.85, 0.15, 1) // gold
-		dc.DrawCircle(bx, by, 3)
+		dc.DrawCircle(bx, by, badgeR)
 		dc.Fill()
+		// Tiny black "!" inside to make the badge unambiguous even when
+		// the gold dot blends with surrounding sand/dirt imagery.
+		setFontSize(dc, 11)
+		dc.SetRGB(0, 0, 0)
+		dc.DrawStringAnchored("!", bx, by+1, 0.5, 0.5)
 	}
 }
 
