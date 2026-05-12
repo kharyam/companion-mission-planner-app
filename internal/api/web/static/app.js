@@ -466,10 +466,14 @@ function startRename(li, slot) {
 }
 
 function selectSlot(s) {
+  const switching = state.selectedSlot && state.selectedSlot.guid !== s.guid;
   state.selectedSlot = s;
   for (const li of $('slot-list').children) li.classList.toggle('selected', li.dataset.guid === s.guid);
   $('transfer-panel').classList.remove('hidden');
   $('transfer-target').textContent = `→ ${s.guid}`;
+  // Switching slots invalidates the prior staged transfer; clear so
+  // the user doesn't accidentally push the previous slot's KMZ here.
+  if (switching) resetTransferForm();
   updateTransferButton();
   $('transfer-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -487,12 +491,13 @@ async function pickFile(file) {
   await autoInspect(file);
 }
 
-// autoInspect uploads the picked KMZ to /api/kmz/inspect and auto-fills
-// the previewMetadata textarea with the extracted waypoints + name.
-// Silently no-ops if the user has typed their own JSON already.
+// autoInspect uploads the picked KMZ to /api/kmz/inspect and refreshes
+// the previewMetadata textarea + mission name with the new file's
+// metadata. Always overwrites — picking a new file means the user
+// wants its metadata, not the previous file's.
 async function autoInspect(file) {
   const ta = $('preview-metadata');
-  if (ta.value.trim()) return; // don't clobber user's input
+  const nameInput = $('mission-name');
 
   const fd = new FormData();
   fd.append('kmz', file);
@@ -501,6 +506,8 @@ async function autoInspect(file) {
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       toast('warn', 'KMZ inspect failed', body?.error?.message || res.statusText);
+      ta.value = '';
+      nameInput.value = '';
       return;
     }
     const payload = {
@@ -508,22 +515,33 @@ async function autoInspect(file) {
       date: body.date,
       waypoints: body.waypoints,
     };
-    // Strip null/empty fields so the JSON stays tidy.
     Object.keys(payload).forEach(k => {
       if (payload[k] == null || (Array.isArray(payload[k]) && payload[k].length === 0)) {
         delete payload[k];
       }
     });
     ta.value = JSON.stringify(payload, null, 2);
-    // Also pre-fill the mission name if user hasn't typed one.
-    if (!$('mission-name').value.trim() && body.name) {
-      $('mission-name').value = body.name;
-    }
+    nameInput.value = body.name || '';
     toast('ok', `Parsed ${body.count} waypoint${body.count === 1 ? '' : 's'}`,
       body.source ? `from ${body.source}` : null);
   } catch (err) {
     toast('warn', 'KMZ inspect threw', err.message);
   }
+}
+
+// resetTransferForm clears the file, name, and previewMetadata fields
+// so the next pick starts clean. Called after a successful transfer
+// and when switching slots — either action invalidates the prior
+// form state.
+function resetTransferForm() {
+  state.file = null;
+  const fileInput = $('kmz-file');
+  if (fileInput) fileInput.value = '';
+  $('file-meta').textContent = 'no file selected';
+  $('mission-name').value = '';
+  $('preview-metadata').value = '';
+  $('push-wp-images').checked = false;
+  updateTransferButton();
 }
 
 function updateTransferButton() {
@@ -585,6 +603,7 @@ async function submitTransfer(e) {
       Elapsed: `${elapsed} ms`,
       At: body.transferredAt || new Date().toISOString(),
     });
+    resetTransferForm();
     await loadSlots();
   } catch (err) {
     showModal('bad', err.code || 'Transfer failed', {
