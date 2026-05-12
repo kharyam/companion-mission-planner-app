@@ -570,7 +570,16 @@ func (r *Registry) ClearSlot(ctx context.Context, deviceID, guid string) error {
 	if err != nil {
 		return err
 	}
-	return c.ClearSlot(guid)
+	if err := c.ClearSlot(guid); err != nil {
+		return err
+	}
+	// Drop the saved name + per-slot user data on our side too.
+	// Slot-order entries are left alone — the slot still exists, the
+	// user just emptied its mission.
+	if r.names != nil {
+		_ = r.names.Set(deviceID, guid, "")
+	}
+	return nil
 }
 
 func (r *Registry) ReadPreview(deviceID, guid string) (io.ReadCloser, error) {

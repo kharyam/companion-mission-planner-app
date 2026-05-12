@@ -155,6 +155,7 @@ async function loadSlots() {
             <button type="button" class="rename-btn" title="Rename slot" data-role="rename">✎</button>
             <button type="button" class="rename-btn" title="Regenerate preview from on-device KMZ" data-role="regen">↻</button>
             <button type="button" class="rename-btn" title="Push per-waypoint images (overwrites any drone photos)" data-role="wp">⎙</button>
+            <button type="button" class="rename-btn danger" title="Clear slot (replace mission with a placeholder)" data-role="clear">✕</button>
           </div>
           <div class="slot-guid">${escapeHTML(s.guid)}</div>
         </div>
@@ -179,6 +180,10 @@ async function loadSlots() {
       li.querySelector('[data-role="wp"]').addEventListener('click', async (e) => {
         e.stopPropagation();
         await pushWaypointImages(s, e.currentTarget);
+      });
+      li.querySelector('[data-role="clear"]').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await clearSlotConfirm(s);
       });
       if (state.selectedSlot?.guid === s.guid) li.classList.add('selected');
       list.appendChild(li);
@@ -372,6 +377,58 @@ async function batchPushAllWaypointImages() {
       method: 'POST',
     })
   );
+}
+
+// ---------- clear slot ----------
+
+async function clearSlotConfirm(slot) {
+  const confirmed = await openConfirmModal({
+    title: 'Clear this slot?',
+    body: `The mission, preview, and per-waypoint images for slot ${slot.guid.slice(0, 8)} will be replaced with a placeholder. The slot itself remains in DJI Fly's list — only its contents are reset. Saved name is also cleared.`,
+    danger: 'Clear',
+    cancel: 'Keep mission',
+  });
+  if (!confirmed) return;
+  await withWorkingModal({
+    title: 'Clearing slot',
+    subtitle: `Replacing KMZ, wiping images, deleting preview for ${slot.guid.slice(0, 8)}…`,
+  }, async () =>
+    api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(slot.guid)}`, {
+      method: 'DELETE',
+    })
+  ).catch(() => null);
+  await loadSlots();
+}
+
+function openConfirmModal({ title, body, danger, cancel }) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.innerHTML = `
+      <div class="modal bad" role="dialog" aria-modal="true">
+        <div class="modal-icon">!</div>
+        <h3 class="modal-title"></h3>
+        <p class="modal-subtitle"></p>
+        <div class="modal-actions">
+          <button type="button" class="ghost cancel">Cancel</button>
+          <button type="button" class="primary confirm">Confirm</button>
+        </div>
+      </div>
+    `;
+    backdrop.querySelector('.modal-title').textContent = title;
+    backdrop.querySelector('.modal-subtitle').textContent = body;
+    backdrop.querySelector('.cancel').textContent = cancel || 'Cancel';
+    backdrop.querySelector('.confirm').textContent = danger || 'Confirm';
+    document.body.appendChild(backdrop);
+    const close = (val) => { backdrop.remove(); resolve(val); };
+    backdrop.querySelector('.cancel').addEventListener('click', () => close(false));
+    backdrop.querySelector('.confirm').addEventListener('click', () => close(true));
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(false); });
+    document.addEventListener('keydown', function onKey(e) {
+      if (e.key === 'Escape') { close(false); document.removeEventListener('keydown', onKey); }
+    });
+    backdrop.querySelector('.confirm').focus();
+  });
 }
 
 // ---------- push waypoint images ----------

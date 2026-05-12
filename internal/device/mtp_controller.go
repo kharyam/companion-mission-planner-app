@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kamdynamics/kam-transfer/internal/kmz"
 	"github.com/kamdynamics/kam-transfer/internal/mtp"
 )
 
@@ -356,8 +357,76 @@ func (c *mtpController) WritePreview(guid string, jpg io.Reader) error {
 	return err
 }
 
+// ClearSlot resets a slot back to a placeholder state: replaces the
+// KMZ with a minimal one-waypoint mission (centered on whatever the
+// previous mission's first waypoint was, falling back to 0,0), wipes
+// the per-waypoint image folder, and deletes the preview JPEG so DJI
+// Fly regenerates one. The slot itself stays — DJI Fly created it and
+// only DJI Fly can really delete the GUID. After ClearSlot the slot
+// shows up as a fresh, mostly-empty entry in the mission list.
 func (c *mtpController) ClearSlot(guid string) error {
-	return fmt.Errorf("clear-slot not yet implemented for MTP (see TROUBLESHOOTING.md)")
+	if err := c.locateWaypointDir(); err != nil {
+		return err
+	}
+	slotFolder, err := findChild(c.dev, c.waypointDir, guid)
+	if err != nil || slotFolder == nil {
+		return fmt.Errorf("slot %s: %w", guid, ErrSlotNotFound)
+	}
+
+	// Try to preserve the previous mission's first-waypoint location
+	// so the placeholder lands somewhere sensible (the user's last
+	// flight area). Falls back to (0,0) if we can't read it.
+	var lat, lng float64
+	if existing, _ := findChild(c.dev, slotFolder, guid+".kmz"); existing != nil {
+		var buf bytes.Buffer
+		if err := c.dev.GetFile(existing, &buf); err == nil {
+			if m, err := kmz.ExtractMission(bytes.NewReader(buf.Bytes()), int64(buf.Len())); err == nil && len(m.Waypoints) > 0 {
+				lat = m.Waypoints[0].Lat
+				lng = m.Waypoints[0].Lng
+			}
+		}
+	}
+
+	placeholderBytes, err := kmz.PlaceholderKMZ(lat, lng)
+	if err != nil {
+		return fmt.Errorf("build placeholder kmz: %w", err)
+	}
+
+	// Replace the KMZ.
+	kmzName := guid + ".kmz"
+	if existing, _ := findChild(c.dev, slotFolder, kmzName); existing != nil {
+		if err := c.dev.Delete(existing); err != nil {
+			return fmt.Errorf("delete existing kmz: %w", err)
+		}
+	}
+	if _, err := c.dev.PutFile(slotFolder, kmzName, int64(len(placeholderBytes)), bytes.NewReader(placeholderBytes)); err != nil {
+		return fmt.Errorf("write placeholder kmz: %w", err)
+	}
+
+	// Wipe everything in image/ (drone photos + WP renders + ShotSnap).
+	// Leaving stale photos misaligned with a one-waypoint mission would
+	// be confusing in DJI Fly's editor.
+	if imageFolder, _ := findChild(c.dev, slotFolder, "image"); imageFolder != nil {
+		children, err := c.dev.ListDir(imageFolder)
+		if err == nil {
+			for i := range children {
+				ch := children[i]
+				if !ch.IsFolder {
+					_ = c.dev.Delete(&ch)
+				}
+			}
+		}
+	}
+
+	// Delete the preview JPEG. DJI Fly regenerates one on next view.
+	if c.previewDir != nil {
+		if subFolder, _ := findChild(c.dev, c.previewDir, guid); subFolder != nil {
+			if existing, _ := findChild(c.dev, subFolder, guid+".jpg"); existing != nil {
+				_ = c.dev.Delete(existing)
+			}
+		}
+	}
+	return nil
 }
 
 // findChild returns the immediate child of parent whose name matches

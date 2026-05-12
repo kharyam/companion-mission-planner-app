@@ -316,6 +316,10 @@ main {
   color: var(--red);
   background: rgba(255, 0, 0, 0.08);
 }
+.rename-btn.danger:hover {
+  color: var(--bad);
+  background: rgba(239, 68, 68, 0.10);
+}
 
 .slot-name-edit {
   background: #050505;
