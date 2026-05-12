@@ -276,10 +276,14 @@ func drawMarker(dc *gg.Context, cx, cy float64, num int) {
 		dc.DrawImageAnchored(scaled, int(cx+offX), int(cy+offY), 0.5, 0.5)
 	}
 
-	// Number, large and centered.
-	setFontSize(dc, 22)
-	dc.SetRGB(1, 1, 1)
-	dc.DrawStringAnchored(fmt.Sprintf("%d", num), cx, cy+2, 0.5, 0.45)
+	// Number, large and centered. num <= 0 means "no number" — DJI Fly
+	// overlays its own number on per-waypoint images, so we skip it
+	// there and let our marker just be the branded location pin.
+	if num > 0 {
+		setFontSize(dc, 22)
+		dc.SetRGB(1, 1, 1)
+		dc.DrawStringAnchored(fmt.Sprintf("%d", num), cx, cy+2, 0.5, 0.45)
+	}
 }
 
 // scaleImage is a tiny nearest-neighbor scaler that's good enough for
@@ -446,8 +450,10 @@ func RenderWaypoint(ctx context.Context, lat, lng float64, num int, opts Waypoin
 		}
 	}
 OVERLAY:
-	// Center the marker — it represents the waypoint at lat/lng.
-	drawMarker(dc, float64(opts.Width)/2, float64(opts.Height)/2, num)
+	// Center the marker. num=0 so drawMarker skips drawing the number
+	// — DJI Fly overlays its own waypoint number on these images.
+	drawMarker(dc, float64(opts.Width)/2, float64(opts.Height)/2, 0)
+	_ = num
 
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, dc.Image(), &jpeg.Options{Quality: 82}); err != nil {

@@ -21,6 +21,7 @@ package mtp
 import (
 	"errors"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -48,6 +49,13 @@ type Device struct {
 	// Vendor / Product are the USB IDs, useful for filtering to DJI.
 	Vendor  uint16
 	Product uint16
+
+	// mu serializes every method that touches libmtp through this
+	// handle. libmtp is not thread-safe — concurrent calls into the
+	// same device pointer can SIGSEGV inside the C library (we caught
+	// this with two simultaneous Get_Files_And_Folders). All public
+	// methods acquire mu around their cgo path.
+	mu sync.Mutex
 
 	// impl carries the platform-specific state (libmtp pointers on
 	// linux+cgo, nil on stub builds). Access via the receiver methods
@@ -82,11 +90,15 @@ func (c *Client) List() ([]*Device, error) {
 
 // Open returns a handle ready for I/O. Caller must Close.
 func (c *Client) Open(d *Device) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return openDevice(d)
 }
 
 // Close releases the libmtp handle. Idempotent.
 func (d *Device) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return closeDevice(d)
 }
 
@@ -95,6 +107,8 @@ func (d *Device) Close() error {
 // into the FileEntry for that node. Returns ErrNotFound if any segment
 // is missing.
 func (d *Device) LookupPath(p string) (*FileEntry, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return lookupPath(d, p)
 }
 
@@ -102,11 +116,15 @@ func (d *Device) LookupPath(p string) (*FileEntry, error) {
 // be a folder. To list the device root, pass a zero FileEntry (libmtp
 // treats folder.ObjectID == 0 + StorageID == 0 as "all roots").
 func (d *Device) ListDir(folder *FileEntry) ([]FileEntry, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return listDir(d, folder)
 }
 
 // GetFile streams an MTP object into w.
 func (d *Device) GetFile(entry *FileEntry, w io.Writer) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return getFile(d, entry, w)
 }
 
@@ -114,10 +132,14 @@ func (d *Device) GetFile(entry *FileEntry, w io.Writer) error {
 // MTP requires the size up front, so callers must know it before
 // streaming. Returns the new object ID.
 func (d *Device) PutFile(parent *FileEntry, name string, size int64, r io.Reader) (uint32, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return putFile(d, parent, name, size, r)
 }
 
 // Delete removes an object (file or folder). Folders must be empty.
 func (d *Device) Delete(entry *FileEntry) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return deleteObject(d, entry)
 }
