@@ -460,9 +460,9 @@ func RenderWaypoint(ctx context.Context, lat, lng float64, num int, opts Waypoin
 		}
 	}
 OVERLAY:
-	// Center the marker. num=0 so drawMarker skips drawing the number
-	// — DJI Fly overlays its own waypoint number on these images.
-	drawMarker(dc, float64(opts.Width)/2, float64(opts.Height)/2, 0)
+	// No overlay — DJI Fly draws its own waypoint number, pin, and any
+	// other badges on top of this image inside its mission editor.
+	// Anything we put here would just collide with DJI Fly's markup.
 	_ = num
 
 	var buf bytes.Buffer
