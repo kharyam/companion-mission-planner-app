@@ -92,14 +92,20 @@ func (r *Registry) Refresh(ctx context.Context) error {
 	defer r.mu.Unlock()
 	r.devices = map[string]Controller{}
 
-	// ADB
+	// ADB — best effort. The MTP path on DJI RC 2 kills adb-server to
+	// free the USB interface, which makes subsequent ListDevices fail
+	// with ServerNotAvailable. That's expected; we don't want the UI
+	// to show "Could not list devices" just because ADB is down.
+	// Log once per Refresh and continue to MTP. If the user starts
+	// adb-server manually later, the next Refresh will pick it up.
 	if r.adbClient != nil {
 		devs, err := r.adbClient.ListDevices()
 		if err != nil {
-			return err
-		}
-		for _, d := range devs {
-			r.devices[d.Serial] = newADBController(d, r.logger)
+			r.logger.Debug("adb list failed (continuing with MTP)", "err", err)
+		} else {
+			for _, d := range devs {
+				r.devices[d.Serial] = newADBController(d, r.logger)
+			}
 		}
 	}
 
