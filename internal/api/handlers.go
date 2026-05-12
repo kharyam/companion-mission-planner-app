@@ -308,6 +308,31 @@ func (s *Server) handlePushWaypointImages(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// handleSetSlotOrder accepts {"order":["guid1","guid2",...]} and
+// persists the user's preferred slot ordering for this device.
+func (s *Server) handleSetSlotOrder(w http.ResponseWriter, r *http.Request) {
+	deviceID := pathParam(r, "deviceId")
+	var body struct {
+		Order []string `json:"order"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "body must be {\"order\":[\"guid\",...]}", nil)
+		return
+	}
+	// Reject malformed GUIDs to keep the sidecar clean.
+	for _, g := range body.Order {
+		if !kmz.IsValidGUID(g) {
+			writeError(w, http.StatusBadRequest, CodeInvalidGUID, "malformed guid in order list", map[string]any{"guid": g})
+			return
+		}
+	}
+	if err := s.registry.SetSlotOrder(deviceID, body.Order); err != nil {
+		writeError(w, http.StatusInternalServerError, CodeInternalError, err.Error(), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deviceId": deviceID, "count": len(body.Order)})
+}
+
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if err := s.registry.Refresh(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, CodeInternalError, err.Error(), nil)

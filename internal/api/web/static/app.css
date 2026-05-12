@@ -206,6 +206,20 @@ main {
   padding-left: 15px;
 }
 
+.slot-list li[draggable="true"] {
+  cursor: grab;
+}
+.slot-list li.dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+.slot-list li.drop-target-before {
+  box-shadow: 0 -2px 0 0 var(--red) inset;
+}
+.slot-list li.drop-target-after {
+  box-shadow: 0 2px 0 0 var(--red) inset;
+}
+
 .device-list li.placeholder, .slot-list li.placeholder {
   color: var(--text-faint);
   font-style: italic;

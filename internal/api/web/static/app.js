@@ -141,6 +141,7 @@ async function loadSlots() {
     for (const s of slots) {
       const li = document.createElement('li');
       li.dataset.guid = s.guid;
+      li.draggable = true;
       // Cache-bust on lastModified so re-uploads visibly refresh.
       const cacheBust = s.lastModified ? `?v=${encodeURIComponent(s.lastModified)}` : '';
       const thumb = s.previewAvailable
@@ -182,6 +183,7 @@ async function loadSlots() {
       if (state.selectedSlot?.guid === s.guid) li.classList.add('selected');
       list.appendChild(li);
     }
+    wireSlotDrag(list);
   } catch (e) {
     list.innerHTML = '';
     toast('bad', 'Could not list slots', e.message || e.code);
@@ -241,6 +243,66 @@ function openWorkingModal(title, subtitle) {
     },
     setTitle: (t) => { backdrop.querySelector('.modal-title').textContent = t; },
   };
+}
+
+// ---------- drag-and-drop reorder ----------
+
+function wireSlotDrag(list) {
+  let dragged = null;
+
+  list.querySelectorAll('li[data-guid]').forEach(li => {
+    li.addEventListener('dragstart', (e) => {
+      dragged = li;
+      li.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      // Required for Firefox to actually fire drop events
+      try { e.dataTransfer.setData('text/plain', li.dataset.guid); } catch {}
+    });
+    li.addEventListener('dragend', () => {
+      li.classList.remove('dragging');
+      list.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+      dragged = null;
+    });
+    li.addEventListener('dragover', (e) => {
+      if (!dragged || dragged === li) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      // Visual hint: insert above or below depending on mouse position
+      const rect = li.getBoundingClientRect();
+      const before = e.clientY < rect.top + rect.height / 2;
+      list.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+      li.classList.add(before ? 'drop-target-before' : 'drop-target-after');
+      li.classList.add('drop-target');
+    });
+    li.addEventListener('dragleave', () => {
+      li.classList.remove('drop-target', 'drop-target-before', 'drop-target-after');
+    });
+    li.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      if (!dragged || dragged === li) return;
+      const rect = li.getBoundingClientRect();
+      const before = e.clientY < rect.top + rect.height / 2;
+      if (before) list.insertBefore(dragged, li);
+      else list.insertBefore(dragged, li.nextSibling);
+      li.classList.remove('drop-target', 'drop-target-before', 'drop-target-after');
+      await persistSlotOrder();
+    });
+  });
+}
+
+async function persistSlotOrder() {
+  if (!state.selectedDevice) return;
+  const order = Array.from(document.querySelectorAll('#slot-list li[data-guid]')).map(li => li.dataset.guid);
+  try {
+    await api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slot-order`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order }),
+    });
+    toast('ok', 'Order saved', `${order.length} slots`);
+  } catch (err) {
+    toast('bad', 'Could not save order', err.message || err.code);
+  }
 }
 
 // ---------- batch helpers ----------

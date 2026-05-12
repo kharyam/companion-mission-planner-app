@@ -18,6 +18,7 @@ import (
 	"github.com/kamdynamics/kam-transfer/internal/mtp"
 	"github.com/kamdynamics/kam-transfer/internal/names"
 	"github.com/kamdynamics/kam-transfer/internal/preview"
+	"github.com/kamdynamics/kam-transfer/internal/slotorder"
 )
 
 // ErrUnknownDevice is returned when an API call references a device the
@@ -52,6 +53,10 @@ type Registry struct {
 	// names is the host-side cache of user-set slot names. Optional;
 	// nil means "no overrides, use whatever the controller returns".
 	names *names.Store
+
+	// order is the per-device user-chosen slot ordering. Optional;
+	// nil means "use whatever the controller returns".
+	order *slotorder.Store
 }
 
 // NewRegistry creates a registry. It does not start polling; the API
@@ -62,6 +67,10 @@ func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 	if err != nil {
 		logger.Warn("slot-name store unavailable", "err", err)
 	}
+	orderStore, err := slotorder.New(slotOrderPath(cfg))
+	if err != nil {
+		logger.Warn("slot-order store unavailable", "err", err)
+	}
 	r := &Registry{
 		cfg:            cfg,
 		logger:         logger,
@@ -70,6 +79,7 @@ func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 		openMTP:        map[string]*mtp.Device{},
 		previewEnabled: previewEnabled,
 		names:          store,
+		order:          orderStore,
 	}
 	t, err := adb.Dial(cfg.ADB.ServerHost, cfg.ADB.ServerPort)
 	if err != nil {
@@ -214,6 +224,25 @@ func slotNamesPath(cfg *config.Config) string {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(cfgPath), "slot-names.json")
+}
+
+// slotOrderPath is the parallel sidecar for user-chosen slot ordering.
+func slotOrderPath(cfg *config.Config) string {
+	cfgPath, err := config.DefaultPath()
+	if err != nil || cfg == nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(cfgPath), "slot-order.json")
+}
+
+// SetSlotOrder persists a user-chosen ordering of slot GUIDs for the
+// given device. Unknown GUIDs in the order list are ignored when
+// applied; missing GUIDs sort to the end.
+func (r *Registry) SetSlotOrder(deviceID string, order []string) error {
+	if r.order == nil {
+		return fmt.Errorf("order store unavailable")
+	}
+	return r.order.Set(deviceID, order)
 }
 
 // RegeneratePreview pulls the KMZ off the device for the named slot,
@@ -457,7 +486,11 @@ func (r *Registry) ListSlots(ctx context.Context, deviceID string) ([]Slot, erro
 	if err != nil {
 		return nil, err
 	}
-	return r.applySavedNames(deviceID, slots), nil
+	slots = r.applySavedNames(deviceID, slots)
+	if r.order != nil {
+		slots = slotorder.Reorder(r.order.Get(deviceID), slots, func(s Slot) string { return s.GUID })
+	}
+	return slots, nil
 }
 
 func (r *Registry) Transfer(ctx context.Context, deviceID, guid, name string, kmz io.Reader) (*TransferResult, error) {
