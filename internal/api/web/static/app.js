@@ -1,0 +1,289 @@
+// kam-transfer admin UI — vanilla JS, no build step.
+// Calls the same JSON+multipart API that KAM Mission Planner uses.
+
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  selectedDevice: null,
+  selectedSlot: null,
+  file: null,
+};
+
+// ---------- toast/log ----------
+
+function toast(kind, title, detail) {
+  const el = document.createElement('div');
+  el.className = `toast ${kind}`;
+  el.innerHTML = `<div class="toast-title"></div><div class="toast-detail"></div>`;
+  el.querySelector('.toast-title').textContent = title;
+  if (detail) el.querySelector('.toast-detail').textContent = detail;
+  $('log').appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = '0';
+    el.style.transition = 'opacity 300ms ease';
+    setTimeout(() => el.remove(), 300);
+  }, kind === 'bad' ? 8000 : 4500);
+}
+
+// ---------- api helpers ----------
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, opts);
+  const text = await res.text();
+  let body;
+  try { body = text ? JSON.parse(text) : null; } catch { body = { _raw: text }; }
+  if (!res.ok) {
+    const err = body?.error || { code: 'HTTP_' + res.status, message: text || res.statusText };
+    throw err;
+  }
+  return body;
+}
+
+function bytesHuman(n) {
+  if (!n && n !== 0) return '—';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+function timeHuman(iso) {
+  if (!iso || iso === '0001-01-01T00:00:00Z') return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
+// ---------- health ----------
+
+async function pollHealth() {
+  try {
+    const h = await api('/api/health');
+    $('health-dot').className = 'dot ok';
+    $('health-label').textContent = 'online';
+    $('version-label').textContent = h.version || '';
+  } catch (e) {
+    $('health-dot').className = 'dot bad';
+    $('health-label').textContent = 'offline';
+  }
+}
+
+// ---------- devices ----------
+
+async function loadDevices() {
+  const list = $('device-list');
+  list.innerHTML = '<li class="placeholder">scanning…</li>';
+  try {
+    const { devices } = await api('/api/devices');
+    list.innerHTML = '';
+    if (!devices?.length) {
+      list.innerHTML = '<li class="placeholder">no devices found — plug a controller in then refresh</li>';
+      return;
+    }
+    for (const d of devices) {
+      const li = document.createElement('li');
+      li.dataset.id = d.id;
+      const stateBadge = d.authorized
+        ? `<span class="badge ok">${d.state || 'online'}</span>`
+        : `<span class="badge warn">${d.state || 'pending'}</span>`;
+      const transportBadge = `<span class="badge ${d.connectionType}">${(d.connectionType || '').toUpperCase()}</span>`;
+      const djiBadge = d.djiFlyDetected
+        ? `<span class="badge ok">DJI Fly</span>`
+        : `<span class="badge bad">no DJI Fly</span>`;
+      li.innerHTML = `
+        <div>
+          <div class="dev-name">${escapeHTML(d.model || 'DJI device')}</div>
+          <div class="dev-id">${escapeHTML(d.id)}</div>
+          ${d.hint ? `<div class="dev-meta dim">${escapeHTML(d.hint)}</div>` : ''}
+        </div>
+        <div class="dev-meta">
+          ${transportBadge}
+          ${stateBadge}
+          ${djiBadge}
+        </div>
+      `;
+      li.addEventListener('click', () => selectDevice(d));
+      if (state.selectedDevice?.id === d.id) li.classList.add('selected');
+      list.appendChild(li);
+    }
+  } catch (e) {
+    list.innerHTML = '';
+    toast('bad', 'Could not list devices', e.message || e.code);
+  }
+}
+
+async function selectDevice(d) {
+  state.selectedDevice = d;
+  state.selectedSlot = null;
+  for (const li of $('device-list').children) li.classList.toggle('selected', li.dataset.id === d.id);
+  $('slots-panel').classList.remove('hidden');
+  $('transfer-panel').classList.add('hidden');
+  $('slots-device-name').textContent = `on ${d.model || d.id}`;
+  await loadSlots();
+}
+
+// ---------- slots ----------
+
+async function loadSlots() {
+  if (!state.selectedDevice) return;
+  const list = $('slot-list');
+  list.innerHTML = '<li class="placeholder">loading slots…</li>';
+  try {
+    const { slots } = await api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots`);
+    list.innerHTML = '';
+    if (!slots?.length) {
+      list.innerHTML = '<li class="placeholder">no slots — create placeholder missions in DJI Fly first</li>';
+      return;
+    }
+    for (const s of slots) {
+      const li = document.createElement('li');
+      li.dataset.guid = s.guid;
+      li.innerHTML = `
+        <div>
+          <div class="slot-name">${escapeHTML(s.name || 'Slot')}</div>
+          <div class="slot-guid">${escapeHTML(s.guid)}</div>
+        </div>
+        <div class="slot-meta">
+          <span>${bytesHuman(s.fileSize)}</span>
+          <span>${timeHuman(s.lastModified)}</span>
+          ${s.previewAvailable ? '<span class="badge ok">preview</span>' : '<span class="badge bad">no preview</span>'}
+        </div>
+      `;
+      li.addEventListener('click', () => selectSlot(s));
+      if (state.selectedSlot?.guid === s.guid) li.classList.add('selected');
+      list.appendChild(li);
+    }
+  } catch (e) {
+    list.innerHTML = '';
+    toast('bad', 'Could not list slots', e.message || e.code);
+  }
+}
+
+function selectSlot(s) {
+  state.selectedSlot = s;
+  for (const li of $('slot-list').children) li.classList.toggle('selected', li.dataset.guid === s.guid);
+  $('transfer-panel').classList.remove('hidden');
+  $('transfer-target').textContent = `→ ${s.guid}`;
+  updateTransferButton();
+  $('transfer-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// ---------- transfer ----------
+
+function pickFile(file) {
+  if (!file) return;
+  if (!/\.kmz$/i.test(file.name)) {
+    toast('warn', 'That doesn’t look like a KMZ', file.name);
+  }
+  state.file = file;
+  $('file-meta').textContent = `${file.name} · ${bytesHuman(file.size)}`;
+  updateTransferButton();
+}
+
+function updateTransferButton() {
+  const ready = state.file && state.selectedDevice && state.selectedSlot;
+  $('transfer-button').disabled = !ready;
+  $('transfer-hint').textContent = ready
+    ? 'ready'
+    : state.selectedSlot
+      ? 'pick a file to enable'
+      : 'pick a slot first';
+}
+
+async function submitTransfer(e) {
+  e.preventDefault();
+  if (!state.file || !state.selectedDevice || !state.selectedSlot) return;
+
+  const url = `/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(state.selectedSlot.guid)}/transfer`;
+  const fd = new FormData();
+  fd.append('kmz', state.file);
+
+  const name = $('mission-name').value.trim();
+  if (name) fd.append('name', name);
+
+  const previewRaw = $('preview-metadata').value.trim();
+  if (previewRaw) {
+    try {
+      JSON.parse(previewRaw); // validate before sending
+      fd.append('previewMetadata', previewRaw);
+    } catch (err) {
+      toast('bad', 'previewMetadata is not valid JSON', err.message);
+      return;
+    }
+  }
+
+  $('transfer-button').disabled = true;
+  $('transfer-hint').textContent = 'transferring…';
+  try {
+    const res = await fetch(url, { method: 'POST', body: fd });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = body.error || { message: res.statusText };
+      throw err;
+    }
+    toast('ok', 'Transfer complete', `${bytesHuman(body.fileSize)} → slot ${state.selectedSlot.guid.slice(0, 8)}`);
+    await loadSlots(); // re-read so the new size/mtime show up
+  } catch (err) {
+    toast('bad', err.code || 'Transfer failed', err.message || JSON.stringify(err));
+  } finally {
+    updateTransferButton();
+  }
+}
+
+// ---------- dropzone ----------
+
+function wireDropzone() {
+  const dz = $('dropzone');
+  const input = $('kmz-file');
+  dz.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => pickFile(input.files[0]));
+  ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault();
+    dz.classList.add('dragover');
+  }));
+  ['dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault();
+    dz.classList.remove('dragover');
+  }));
+  dz.addEventListener('drop', e => {
+    e.preventDefault();
+    if (e.dataTransfer.files.length) pickFile(e.dataTransfer.files[0]);
+  });
+}
+
+// ---------- websocket events ----------
+
+function wireEvents() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/api/events`);
+  ws.addEventListener('message', (m) => {
+    let ev;
+    try { ev = JSON.parse(m.data); } catch { return; }
+    toast('info', ev.type, ev.deviceId ? `device ${ev.deviceId.slice(0, 12)}…` : '');
+    if (ev.type?.startsWith('device.')) loadDevices();
+    if (ev.type === 'transfer.completed' && state.selectedDevice) loadSlots();
+  });
+  ws.addEventListener('close', () => setTimeout(wireEvents, 2000));
+  ws.addEventListener('error', () => {});
+}
+
+// ---------- misc ----------
+
+function escapeHTML(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+// ---------- bootstrap ----------
+
+window.addEventListener('DOMContentLoaded', async () => {
+  wireDropzone();
+  $('transfer-form').addEventListener('submit', submitTransfer);
+  $('refresh-devices').addEventListener('click', loadDevices);
+  $('refresh-slots').addEventListener('click', loadSlots);
+
+  await pollHealth();
+  setInterval(pollHealth, 10000);
+  await loadDevices();
+  wireEvents();
+});

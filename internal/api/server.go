@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kamdynamics/kam-transfer/internal/api/web"
 	"github.com/kamdynamics/kam-transfer/internal/config"
 	"github.com/kamdynamics/kam-transfer/internal/device"
 )
@@ -119,6 +121,40 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/devices/{deviceId}/slots/{guid}", s.handleClearSlot)
 	mux.HandleFunc("POST /api/devices/{deviceId}/refresh", s.handleRefresh)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
+
+	// Admin UI
+	staticFS, err := web.StaticFS()
+	if err == nil {
+		fileServer := http.FileServer(http.FS(staticFS))
+		mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", fileServer))
+		mux.HandleFunc("GET /ui/", s.handleUIIndex)
+		mux.HandleFunc("GET /ui", s.handleUIIndex)
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/ui/", http.StatusFound)
+		})
+	} else {
+		s.logger.Warn("admin UI assets unavailable", "err", err)
+	}
+}
+
+// handleUIIndex serves the SPA shell. We read it on demand rather than
+// caching the bytes so a `go run ./cmd/kam-transfer` during development
+// picks up edits without a rebuild — go:embed still wins at release time.
+func (s *Server) handleUIIndex(w http.ResponseWriter, r *http.Request) {
+	staticFS, err := web.StaticFS()
+	if err != nil {
+		http.Error(w, "ui unavailable", http.StatusInternalServerError)
+		return
+	}
+	f, err := staticFS.Open("index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.Copy(w, f)
 }
 
 // authMiddleware enforces the optional bearer token from config.

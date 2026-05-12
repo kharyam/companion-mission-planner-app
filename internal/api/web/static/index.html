@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>kam-transfer</title>
+  <link rel="stylesheet" href="/ui/static/app.css">
+  <link rel="icon" type="image/svg+xml" href="/ui/static/kam-logo.svg">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <img src="/ui/static/kam-logo.svg" alt="KAM" class="logo">
+    <div class="title">
+      <h1>kam-transfer</h1>
+      <p class="subtitle">Companion daemon for KAM Mission Planner</p>
+    </div>
+  </div>
+  <div class="status">
+    <span class="dot" id="health-dot"></span>
+    <span id="health-label">connecting…</span>
+    <span class="version" id="version-label"></span>
+  </div>
+</header>
+
+<main>
+
+  <section class="panel" id="devices-panel">
+    <div class="panel-head">
+      <h2><span class="num">1</span> Devices</h2>
+      <button class="ghost" id="refresh-devices">Refresh</button>
+    </div>
+    <ul class="device-list" id="device-list">
+      <li class="placeholder">scanning…</li>
+    </ul>
+  </section>
+
+  <section class="panel hidden" id="slots-panel">
+    <div class="panel-head">
+      <h2><span class="num">2</span> Slots <span class="dim" id="slots-device-name"></span></h2>
+      <button class="ghost" id="refresh-slots">Refresh</button>
+    </div>
+    <ul class="slot-list" id="slot-list"></ul>
+  </section>
+
+  <section class="panel hidden" id="transfer-panel">
+    <div class="panel-head">
+      <h2><span class="num">3</span> Transfer KMZ <span class="dim" id="transfer-target"></span></h2>
+    </div>
+    <form id="transfer-form" class="transfer-form">
+
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="kmz-file" accept=".kmz" hidden>
+        <span class="drop-icon">↑</span>
+        <span class="drop-label">Drop a .kmz here, or click to choose</span>
+        <span class="drop-meta dim" id="file-meta">no file selected</span>
+      </label>
+
+      <label class="field">
+        <span class="field-label">Mission name <span class="dim">(optional, used in preview)</span></span>
+        <input type="text" id="mission-name" placeholder="North Field — survey 1">
+      </label>
+
+      <label class="field">
+        <span class="field-label">previewMetadata JSON <span class="dim">(optional, triggers ESRI preview render)</span></span>
+        <textarea id="preview-metadata" rows="4" placeholder='{"waypoints":[{"lat":37.7749,"lng":-122.4194},{"lat":37.7849,"lng":-122.4094}]}'></textarea>
+      </label>
+
+      <div class="actions">
+        <button type="submit" class="primary" id="transfer-button" disabled>Transfer</button>
+        <span class="dim" id="transfer-hint">pick a file to enable</span>
+      </div>
+    </form>
+  </section>
+
+</main>
+
+<aside class="log" id="log" aria-live="polite"></aside>
+
+<script src="/ui/static/app.js"></script>
+</body>
+</html>
