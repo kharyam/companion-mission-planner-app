@@ -12,16 +12,71 @@ package preview
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"fmt"
 	"image"
 	"image/jpeg"
+	"image/png"
 	"io"
 	"math"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/fogleman/gg"
+	"github.com/golang/freetype/truetype"
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/gofont/goregular"
 )
+
+//go:embed kam-logo.png
+var kamLogoPNG []byte
+
+var (
+	logoOnce sync.Once
+	logoImg  image.Image
+)
+
+// kamLogo returns the rasterized KAM logo as a Go image.Image. Decoded
+// once on first call and cached for the life of the process.
+func kamLogo() image.Image {
+	logoOnce.Do(func() {
+		img, err := png.Decode(bytes.NewReader(kamLogoPNG))
+		if err == nil {
+			logoImg = img
+		}
+	})
+	return logoImg
+}
+
+var (
+	fontOnce sync.Once
+	fontTT   *truetype.Font
+)
+
+// loadFont returns the embedded goregular font, parsed once and shared.
+func loadFont() *truetype.Font {
+	fontOnce.Do(func() {
+		f, err := truetype.Parse(goregular.TTF)
+		if err == nil {
+			fontTT = f
+		}
+	})
+	return fontTT
+}
+
+// setFontSize switches the gg context's font face to goregular at the
+// requested size. Safe to call many times in one render — each face is
+// constructed fresh; goregular parsing is cached.
+func setFontSize(dc *gg.Context, sizePx float64) {
+	f := loadFont()
+	if f == nil {
+		return
+	}
+	face := truetype.NewFace(f, &truetype.Options{Size: sizePx, DPI: 72})
+	dc.SetFontFace(face)
+	_ = font.Face(face)
+}
 
 // Waypoint is the lat/lng-only view this package needs.
 type Waypoint struct {
@@ -172,9 +227,9 @@ func overlayWaypoints(dc *gg.Context, meta *Metadata, proj projection) {
 	if len(meta.Waypoints) == 0 {
 		return
 	}
-	// Draw the path first so circles sit on top.
-	dc.SetRGBA(1, 0.42, 0.21, 0.85)
-	dc.SetLineWidth(3)
+	// Connect the path first so markers draw on top.
+	dc.SetRGBA(1, 0.10, 0.10, 0.85)
+	dc.SetLineWidth(2.5)
 	for i, p := range meta.Waypoints {
 		x, y := proj.latLngToXY(p.Lat, p.Lng)
 		if i == 0 {
@@ -187,20 +242,68 @@ func overlayWaypoints(dc *gg.Context, meta *Metadata, proj projection) {
 
 	for i, p := range meta.Waypoints {
 		x, y := proj.latLngToXY(p.Lat, p.Lng)
-		// halo for legibility on busy tiles
-		dc.SetRGBA(0, 0, 0, 0.45)
-		dc.DrawCircle(x, y, 15)
-		dc.Fill()
-		dc.SetRGB(1, 0.42, 0.21)
-		dc.DrawCircle(x, y, 12)
-		dc.Fill()
-		dc.SetRGB(1, 1, 1)
-		dc.DrawStringAnchored(fmt.Sprintf("%d", i+1), x, y, 0.5, 0.4)
+		drawMarker(dc, x, y, i+1)
 	}
 }
 
-// overlayWaypointsFallback draws into a non-mapped canvas: just stretch
-// the bbox to a padded rectangle.
+// drawMarker renders one waypoint marker: black filled circle with a
+// thin red outline, the waypoint number prominent in the center, and
+// a tiny KAM logo tucked into the upper-right of the circle.
+func drawMarker(dc *gg.Context, cx, cy float64, num int) {
+	const radius = 16.0
+	// Outline ring (red) for visual separation from the map background.
+	dc.SetRGBA(1, 0.10, 0.10, 0.95)
+	dc.DrawCircle(cx, cy, radius+1.5)
+	dc.Fill()
+	// Black filled center.
+	dc.SetRGB(0, 0, 0)
+	dc.DrawCircle(cx, cy, radius)
+	dc.Fill()
+
+	// Logo in the upper-right of the circle. Scale to ~22% of radius.
+	if img := kamLogo(); img != nil {
+		const logoH = 9.0
+		ratio := float64(img.Bounds().Dx()) / float64(img.Bounds().Dy())
+		logoW := logoH * ratio
+		// Position: tucked just inside the upper-right edge.
+		offX := radius * 0.30
+		offY := -radius * 0.55
+		scaled := scaleImage(img, int(logoW), int(logoH))
+		// gg DrawImageAnchored takes pixel coords for the anchor point.
+		dc.DrawImageAnchored(scaled, int(cx+offX), int(cy+offY), 0.5, 0.5)
+	}
+
+	// Number, large and centered.
+	setFontSize(dc, 16)
+	dc.SetRGB(1, 1, 1)
+	dc.DrawStringAnchored(fmt.Sprintf("%d", num), cx, cy+1, 0.5, 0.45)
+}
+
+// scaleImage is a tiny nearest-neighbor scaler that's good enough for
+// the small badges we draw. The source PNG is rasterized once at high
+// resolution; we just downscale here. Avoids pulling in the
+// golang.org/x/image draw package for one-off resampling.
+func scaleImage(src image.Image, w, h int) image.Image {
+	if w <= 0 || h <= 0 {
+		return src
+	}
+	sb := src.Bounds()
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	xRatio := float64(sb.Dx()) / float64(w)
+	yRatio := float64(sb.Dy()) / float64(h)
+	for y := 0; y < h; y++ {
+		sy := sb.Min.Y + int(float64(y)*yRatio)
+		for x := 0; x < w; x++ {
+			sx := sb.Min.X + int(float64(x)*xRatio)
+			dst.Set(x, y, src.At(sx, sy))
+		}
+	}
+	return dst
+}
+
+// overlayWaypointsFallback draws into a non-mapped canvas: stretch
+// the bbox to a padded rectangle so markers are visible without map
+// tiles. Same marker style as overlayWaypoints.
 func overlayWaypointsFallback(dc *gg.Context, meta *Metadata) {
 	if len(meta.Waypoints) == 0 {
 		return
@@ -216,8 +319,8 @@ func overlayWaypointsFallback(dc *gg.Context, meta *Metadata) {
 	}
 	w, h := dc.Width(), dc.Height()
 	pad := float64(DefaultPadding)
-	dc.SetRGBA(1, 0.42, 0.21, 0.85)
-	dc.SetLineWidth(3)
+	dc.SetRGBA(1, 0.10, 0.10, 0.85)
+	dc.SetLineWidth(2.5)
 	for i, p := range meta.Waypoints {
 		x := pad + (p.Lng-minLng)/dLng*(float64(w)-2*pad)
 		y := pad + (1-(p.Lat-minLat)/dLat)*(float64(h)-2*pad)
@@ -231,11 +334,7 @@ func overlayWaypointsFallback(dc *gg.Context, meta *Metadata) {
 	for i, p := range meta.Waypoints {
 		x := pad + (p.Lng-minLng)/dLng*(float64(w)-2*pad)
 		y := pad + (1-(p.Lat-minLat)/dLat)*(float64(h)-2*pad)
-		dc.SetRGB(1, 0.42, 0.21)
-		dc.DrawCircle(x, y, 14)
-		dc.Fill()
-		dc.SetRGB(1, 1, 1)
-		dc.DrawStringAnchored(fmt.Sprintf("%d", i+1), x, y, 0.5, 0.4)
+		drawMarker(dc, x, y, i+1)
 	}
 }
 
@@ -243,27 +342,39 @@ func overlayText(dc *gg.Context, meta *Metadata) {
 	if meta.Name == "" && meta.Date.IsZero() {
 		return
 	}
-	// Scale the strip height to the canvas — 500x300 gets a 44px strip;
-	// 1024x768 gets a proportionally taller one.
-	stripH := float64(dc.Height()) * 0.15
-	if stripH < 36 {
-		stripH = 36
+	// Strip + fonts ~2.5x the previous values. At 500x300 the strip is
+	// ~110px tall (was ~44px); the name reads at 30px and the date at
+	// 18px, both easily legible at thumbnail viewing distance.
+	nameSize := 30.0
+	dateSize := 18.0
+	stripH := nameSize + dateSize + 24
+	if h := float64(dc.Height()); stripH > h*0.55 {
+		// Cap so the strip never eats more than 55% of the canvas on
+		// tiny non-default sizes.
+		stripH = h * 0.55
+		nameSize = stripH * 0.42
+		dateSize = stripH * 0.25
 	}
-	dc.SetRGBA(0, 0, 0, 0.6)
+	dc.SetRGBA(0, 0, 0, 0.7)
 	dc.DrawRectangle(0, float64(dc.Height())-stripH, float64(dc.Width()), stripH)
 	dc.Fill()
 	dc.SetRGB(1, 1, 1)
+	const leftPad = 14.0
 	if meta.Name != "" {
-		dc.DrawString(meta.Name, 10, float64(dc.Height())-stripH+16)
+		setFontSize(dc, nameSize)
+		dc.DrawString(meta.Name, leftPad, float64(dc.Height())-stripH+nameSize+6)
 	}
 	if !meta.Date.IsZero() {
-		dc.DrawString(meta.Date.Format("2006-01-02 15:04"), 10, float64(dc.Height())-8)
+		setFontSize(dc, dateSize)
+		dc.SetRGBA(1, 1, 1, 0.85)
+		dc.DrawString(meta.Date.Format("2006-01-02 15:04"), leftPad, float64(dc.Height())-12)
 	}
 }
 
 func overlayAttribution(dc *gg.Context) {
-	dc.SetRGBA(0, 0, 0, 0.6)
-	dc.DrawString("© Esri", float64(dc.Width()-50), float64(dc.Height()-4))
+	setFontSize(dc, 11)
+	dc.SetRGBA(0, 0, 0, 0.65)
+	dc.DrawString("© Esri", float64(dc.Width()-44), float64(dc.Height()-4))
 }
 
 // --- helpers ----------------------------------------------------------------
