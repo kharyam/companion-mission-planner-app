@@ -112,14 +112,23 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := r.FormValue("name")
-	res, err := s.registry.Transfer(r.Context(), deviceID, guid, name, bytes.NewReader(rewritten))
+	meta := &device.PreviewMetadata{Name: name, Date: time.Now()}
+	if raw := r.FormValue("previewMetadata"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), meta); err != nil {
+			writeError(w, http.StatusBadRequest, CodeBadRequest, "previewMetadata is not valid JSON: "+err.Error(), nil)
+			return
+		}
+		// Preserve name override even if JSON didn't include it.
+		if meta.Name == "" {
+			meta.Name = name
+		}
+	}
+
+	res, err := s.registry.TransferWithMeta(r.Context(), deviceID, guid, bytes.NewReader(rewritten), meta)
 	if err != nil {
 		s.handleRegistryError(w, err)
 		return
 	}
-
-	// TODO: generate + push preview here using internal/preview, gated on
-	// previewMetadata being present in the multipart payload.
 
 	s.broadcast(Event{Type: "transfer.completed", Device: deviceID, Slot: guid, At: time.Now()})
 	writeJSON(w, http.StatusOK, res)
@@ -152,6 +161,10 @@ func (s *Server) handleRegistryError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, device.ErrUnknownDevice):
 		writeError(w, http.StatusNotFound, CodeDeviceNotFound, err.Error(), nil)
+	case errors.Is(err, device.ErrPreviewNotFound):
+		writeError(w, http.StatusNotFound, CodeSlotNotFound, "preview not found", nil)
+	case errors.Is(err, device.ErrSlotNotFound):
+		writeError(w, http.StatusNotFound, CodeSlotNotFound, err.Error(), nil)
 	default:
 		// Default: surface as internal error. As we identify more failure
 		// modes (auth revoked, disk full, etc.), add Is-checks above.
@@ -165,10 +178,3 @@ func pathParam(r *http.Request, name string) string {
 	return strings.TrimSpace(r.PathValue(name))
 }
 
-// Decode helper for JSON request bodies. Currently unused but useful for
-// future PUT/POST endpoints that take JSON instead of multipart.
-func decodeJSON(r *http.Request, out any) error {
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	return dec.Decode(out)
-}

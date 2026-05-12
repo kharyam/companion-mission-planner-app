@@ -22,9 +22,22 @@ import (
 	"time"
 
 	"github.com/fogleman/gg"
-
-	"github.com/kamdynamics/kam-transfer/internal/device"
 )
+
+// Waypoint is the lat/lng-only view this package needs.
+type Waypoint struct {
+	Lat float64
+	Lng float64
+}
+
+// Metadata is the optional payload that drives a render. The device
+// package converts its richer PreviewMetadata into this struct before
+// calling Generate — keeping the preview package self-contained.
+type Metadata struct {
+	Name      string
+	Waypoints []Waypoint
+	Date      time.Time
+}
 
 // Tile server template. {z}, {y}, {x} are substituted at fetch time.
 const esriTileURL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/%d/%d/%d"
@@ -58,7 +71,7 @@ func (o Options) withDefaults() Options {
 // Generate renders a JPEG preview. If meta has waypoints, we fetch tiles
 // covering their bounding box; otherwise we render a solid backdrop with
 // just the mission name.
-func Generate(ctx context.Context, meta *device.PreviewMetadata, opts Options) ([]byte, error) {
+func Generate(ctx context.Context, meta *Metadata, opts Options) ([]byte, error) {
 	opts = opts.withDefaults()
 	dc := gg.NewContext(opts.Width, opts.Height)
 
@@ -88,7 +101,7 @@ func drawSolid(dc *gg.Context) {
 }
 
 // drawMap composites ESRI tiles covering the waypoint bbox into dc.
-func drawMap(ctx context.Context, dc *gg.Context, meta *device.PreviewMetadata, opts Options) error {
+func drawMap(ctx context.Context, dc *gg.Context, meta *Metadata, opts Options) error {
 	minLat, maxLat, minLng, maxLng := bbox(meta.Waypoints)
 	zoom := pickZoom(minLat, maxLat, minLng, maxLng, opts.Width, opts.Height)
 
@@ -116,7 +129,7 @@ func drawMap(ctx context.Context, dc *gg.Context, meta *device.PreviewMetadata, 
 	return nil
 }
 
-func overlayWaypoints(dc *gg.Context, meta *device.PreviewMetadata) {
+func overlayWaypoints(dc *gg.Context, meta *Metadata) {
 	if len(meta.Waypoints) == 0 {
 		return
 	}
@@ -138,7 +151,7 @@ func overlayWaypoints(dc *gg.Context, meta *device.PreviewMetadata) {
 	}
 }
 
-func overlayText(dc *gg.Context, meta *device.PreviewMetadata) {
+func overlayText(dc *gg.Context, meta *Metadata) {
 	if meta.Name == "" && meta.Date.IsZero() {
 		return
 	}
@@ -161,7 +174,7 @@ func overlayAttribution(dc *gg.Context) {
 
 // --- helpers ----------------------------------------------------------------
 
-func bbox(pts []device.Waypoint) (minLat, maxLat, minLng, maxLng float64) {
+func bbox(pts []Waypoint) (minLat, maxLat, minLng, maxLng float64) {
 	minLat, minLng = 90, 180
 	maxLat, maxLng = -90, -180
 	for _, p := range pts {

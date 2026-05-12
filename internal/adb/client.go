@@ -3,7 +3,10 @@ package adb
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
+	"time"
 
 	goadb "github.com/zach-klippenstein/goadb"
 )
@@ -64,6 +67,38 @@ func (c *Client) Device(serial string) *Device {
 	return &Device{Serial: serial, State: StateUnknown, t: c.t}
 }
 
+// StateChange is the device-state transition event surfaced by Watch.
+type StateChange struct {
+	Serial   string
+	Previous DeviceState
+	Current  DeviceState
+}
+
+// Watch returns a channel of state-change events. The channel is closed
+// when goadb's underlying watcher errors out; callers should treat
+// closure as a signal to call Watch again after backing off. ListDevices
+// remains usable while a Watch is active.
+//
+// The returned channel is not bounded by any context; the caller stops
+// receiving by stopping reads. The underlying goadb watcher cannot be
+// cancelled directly, but its goroutine is small and Shutdown is called
+// when the *Client is collected.
+func (c *Client) Watch() <-chan StateChange {
+	w := c.t.adb.NewDeviceWatcher()
+	out := make(chan StateChange, 16)
+	go func() {
+		defer close(out)
+		for ev := range w.C() {
+			out <- StateChange{
+				Serial:   ev.Serial,
+				Previous: mapState(ev.OldState),
+				Current:  mapState(ev.NewState),
+			}
+		}
+	}()
+	return out
+}
+
 func mapState(s goadb.DeviceState) DeviceState {
 	switch s {
 	case goadb.StateOnline:
@@ -104,6 +139,73 @@ func (d *Device) HasDJIFly() (bool, error) {
 		return false, err
 	}
 	return strings.Contains(out, "OK"), nil
+}
+
+// DirEntry is the minimal directory-entry view we expose. Stripped down
+// from goadb's wire type so callers don't drag in goadb imports.
+type DirEntry struct {
+	Name       string
+	Mode       os.FileMode
+	Size       int64
+	ModifiedAt time.Time
+}
+
+// ListDir lists immediate entries under remotePath. Returns an empty
+// slice (not an error) if the path doesn't exist.
+func (d *Device) ListDir(remotePath string) ([]DirEntry, error) {
+	dev := d.t.adb.Device(goadb.DeviceWithSerial(d.Serial))
+	entries, err := dev.ListDirEntries(remotePath)
+	if err != nil {
+		return nil, fmt.Errorf("list %s: %w", remotePath, err)
+	}
+	raw, err := entries.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DirEntry, 0, len(raw))
+	for _, e := range raw {
+		if e.Name == "." || e.Name == ".." {
+			continue
+		}
+		out = append(out, DirEntry{
+			Name:       e.Name,
+			Mode:       e.Mode,
+			Size:       int64(e.Size),
+			ModifiedAt: e.ModifiedAt,
+		})
+	}
+	return out, nil
+}
+
+// Stat returns metadata for a single remote path, or (zero, false, nil)
+// if the path doesn't exist. Other errors propagate.
+func (d *Device) Stat(remotePath string) (DirEntry, bool, error) {
+	dev := d.t.adb.Device(goadb.DeviceWithSerial(d.Serial))
+	e, err := dev.Stat(remotePath)
+	if err != nil {
+		// goadb returns an error for missing paths; for our purposes
+		// "no such file" is not a hard error.
+		if strings.Contains(err.Error(), "no such") || strings.Contains(err.Error(), "does not exist") {
+			return DirEntry{}, false, nil
+		}
+		return DirEntry{}, false, err
+	}
+	// A zero-mode result also indicates non-existence with this goadb version.
+	if e == nil || (e.Mode == 0 && e.Size == 0 && e.ModifiedAt.IsZero()) {
+		return DirEntry{}, false, nil
+	}
+	return DirEntry{
+		Name:       e.Name,
+		Mode:       e.Mode,
+		Size:       int64(e.Size),
+		ModifiedAt: e.ModifiedAt,
+	}, true, nil
+}
+
+// OpenRead returns a streaming reader for remotePath.
+func (d *Device) OpenRead(remotePath string) (io.ReadCloser, error) {
+	dev := d.t.adb.Device(goadb.DeviceWithSerial(d.Serial))
+	return dev.OpenRead(remotePath)
 }
 
 // ErrNotImplemented is returned by stubbed methods.

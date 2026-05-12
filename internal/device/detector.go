@@ -1,6 +1,7 @@
 package device
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,11 +13,18 @@ import (
 
 	"github.com/kamdynamics/kam-transfer/internal/adb"
 	"github.com/kamdynamics/kam-transfer/internal/config"
+	"github.com/kamdynamics/kam-transfer/internal/preview"
 )
 
 // ErrUnknownDevice is returned when an API call references a device the
 // registry doesn't currently know about.
 var ErrUnknownDevice = errors.New("unknown device")
+
+// ErrPreviewNotFound is returned when a slot has no preview JPEG on device.
+var ErrPreviewNotFound = errors.New("preview not found")
+
+// ErrSlotNotFound is returned when the requested GUID doesn't exist on device.
+var ErrSlotNotFound = errors.New("slot not found")
 
 // Registry tracks all currently connected devices and routes API calls
 // to the correct Controller. It owns the ADB transport.
@@ -28,23 +36,28 @@ type Registry struct {
 	devices map[string]Controller
 
 	adbClient *adb.Client
+
+	// previewEnabled gates ESRI fetches. Set from cfg.Map.Provider.
+	previewEnabled bool
 }
 
 // NewRegistry creates a registry. It does not start polling; the API
 // server triggers refreshes on demand and on websocket subscription.
 func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
+	previewEnabled := cfg.Map.Provider == "esri-world-imagery"
 	t, err := adb.Dial(cfg.ADB.ServerHost, cfg.ADB.ServerPort)
 	if err != nil {
 		// We don't fail registry construction if adb-server is unreachable;
 		// the API will simply report zero devices until the user starts adb.
 		logger.Warn("adb unavailable at startup", "err", err)
-		return &Registry{cfg: cfg, logger: logger, devices: map[string]Controller{}}, nil
+		return &Registry{cfg: cfg, logger: logger, devices: map[string]Controller{}, previewEnabled: previewEnabled}, nil
 	}
 	return &Registry{
-		cfg:       cfg,
-		logger:    logger,
-		devices:   map[string]Controller{},
-		adbClient: adb.NewClient(t),
+		cfg:            cfg,
+		logger:         logger,
+		devices:        map[string]Controller{},
+		adbClient:      adb.NewClient(t),
+		previewEnabled: previewEnabled,
 	}, nil
 }
 
@@ -92,6 +105,56 @@ func (r *Registry) Lookup(id string) (Controller, error) {
 	return c, nil
 }
 
+// Event is the registry-level event emitted by Watch.
+type Event struct {
+	Type     string    `json:"type"` // "device.connected" | "device.disconnected" | "device.authorized" | "device.unauthorized"
+	DeviceID string    `json:"deviceId"`
+	At       time.Time `json:"at"`
+}
+
+// Watch streams device-state events until ctx is cancelled. Safe to
+// call before any device is connected; if adb is unavailable the
+// channel is closed immediately.
+func (r *Registry) Watch(ctx context.Context) <-chan Event {
+	out := make(chan Event, 16)
+	if r.adbClient == nil {
+		close(out)
+		return out
+	}
+	go func() {
+		defer close(out)
+		src := r.adbClient.Watch()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-src:
+				if !ok {
+					return
+				}
+				out <- translateStateChange(ev)
+			}
+		}
+	}()
+	return out
+}
+
+func translateStateChange(ev adb.StateChange) Event {
+	now := time.Now()
+	switch {
+	case ev.Current == adb.StateDevice && ev.Previous != adb.StateDevice:
+		return Event{Type: "device.connected", DeviceID: ev.Serial, At: now}
+	case ev.Current != adb.StateDevice && ev.Previous == adb.StateDevice:
+		return Event{Type: "device.disconnected", DeviceID: ev.Serial, At: now}
+	case ev.Current == adb.StateUnauthorized:
+		return Event{Type: "device.unauthorized", DeviceID: ev.Serial, At: now}
+	case ev.Current == adb.StateDevice && ev.Previous == adb.StateUnauthorized:
+		return Event{Type: "device.authorized", DeviceID: ev.Serial, At: now}
+	default:
+		return Event{Type: "device.statechange", DeviceID: ev.Serial, At: now}
+	}
+}
+
 // Convenience wrappers used by the CLI.
 
 func (r *Registry) ListSlots(ctx context.Context, deviceID string) ([]Slot, error) {
@@ -106,6 +169,13 @@ func (r *Registry) ListSlots(ctx context.Context, deviceID string) ([]Slot, erro
 }
 
 func (r *Registry) Transfer(ctx context.Context, deviceID, guid, name string, kmz io.Reader) (*TransferResult, error) {
+	return r.TransferWithMeta(ctx, deviceID, guid, kmz, &PreviewMetadata{Name: name})
+}
+
+// TransferWithMeta is the full-fidelity transfer entry point. If meta has
+// waypoints and previews are enabled, the registry renders + uploads a
+// preview JPEG alongside the KMZ.
+func (r *Registry) TransferWithMeta(ctx context.Context, deviceID, guid string, kmz io.Reader, meta *PreviewMetadata) (*TransferResult, error) {
 	if err := r.Refresh(ctx); err != nil {
 		return nil, err
 	}
@@ -113,8 +183,47 @@ func (r *Registry) Transfer(ctx context.Context, deviceID, guid, name string, km
 	if err != nil {
 		return nil, err
 	}
-	meta := &PreviewMetadata{Name: name}
-	return c.WriteKMZ(guid, kmz, meta)
+	res, err := c.WriteKMZ(guid, kmz, meta)
+	if err != nil {
+		return nil, err
+	}
+	if r.previewEnabled && meta != nil && len(meta.Waypoints) > 0 {
+		if perr := r.uploadPreview(ctx, c, guid, meta); perr != nil {
+			r.logger.Warn("preview upload failed", "guid", guid, "err", perr)
+			// Don't fail the transfer — the KMZ already landed.
+		}
+	}
+	return res, nil
+}
+
+// uploadPreview renders meta into a JPEG via internal/preview and pushes
+// it to the device's map_preview/<GUID>.jpg location.
+func (r *Registry) uploadPreview(ctx context.Context, c Controller, guid string, meta *PreviewMetadata) error {
+	pm := &preview.Metadata{
+		Name: meta.Name,
+		Date: meta.Date,
+	}
+	for _, w := range meta.Waypoints {
+		pm.Waypoints = append(pm.Waypoints, preview.Waypoint{Lat: w.Lat, Lng: w.Lng})
+	}
+	jpg, err := preview.Generate(ctx, pm, preview.Options{
+		Width:  r.cfg.Map.Width,
+		Height: r.cfg.Map.Height,
+	})
+	if err != nil {
+		return fmt.Errorf("render: %w", err)
+	}
+	uploader, ok := c.(PreviewWriter)
+	if !ok {
+		return fmt.Errorf("controller does not support preview write")
+	}
+	return uploader.WritePreview(guid, bytes.NewReader(jpg))
+}
+
+// PreviewWriter is implemented by controllers that can push a preview JPEG.
+// adbController satisfies it; future MTP controllers may not.
+type PreviewWriter interface {
+	WritePreview(guid string, jpg io.Reader) error
 }
 
 func (r *Registry) ClearSlot(ctx context.Context, deviceID, guid string) error {
@@ -160,42 +269,44 @@ func (c *adbController) Info() Info {
 }
 
 func (c *adbController) ListSlots() ([]Slot, error) {
-	// TODO: real implementation walks WaypointDir on the device and
-	// parses each <GUID>/<GUID>.kmz. For now we shell out to `ls -l`
-	// so the wiring is testable end-to-end.
-	out, err := c.dev.Shell(fmt.Sprintf("ls -l %q 2>/dev/null", WaypointDir))
+	entries, err := c.dev.ListDir(WaypointDir)
 	if err != nil {
 		return nil, err
 	}
-	slots := []Slot{}
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "total") {
+	slots := make([]Slot, 0, len(entries))
+	for _, e := range entries {
+		if !looksLikeGUID(e.Name) {
+			// Skip non-slot entries (e.g. map_preview/).
 			continue
 		}
-		// We expect directory entries named <GUID>.
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
+		paths := PathsFor(e.Name)
+		kmzStat, kmzExists, _ := c.dev.Stat(paths.KMZ)
+		_, previewExists, _ := c.dev.Stat(paths.Preview)
+		slot := Slot{
+			GUID:             e.Name,
+			Name:             "Slot " + e.Name[:8],
+			LastModified:     e.ModifiedAt,
+			PreviewAvailable: previewExists,
 		}
-		name := fields[len(fields)-1]
-		if !looksLikeGUID(name) {
-			continue
+		if kmzExists {
+			slot.FileSize = kmzStat.Size
+			if kmzStat.ModifiedAt.After(slot.LastModified) {
+				slot.LastModified = kmzStat.ModifiedAt
+			}
 		}
-		slots = append(slots, Slot{
-			GUID:             name,
-			Name:             "Slot " + name[:8],
-			LastModified:     time.Time{},
-			FileSize:         0,
-			PreviewAvailable: false,
-		})
+		slots = append(slots, slot)
 	}
 	return slots, nil
 }
 
 func (c *adbController) ReadPreview(guid string) (io.ReadCloser, error) {
-	// TODO: pull bytes via sync; for now signal not-implemented.
-	return nil, fmt.Errorf("preview read not yet implemented")
+	paths := PathsFor(guid)
+	if _, ok, err := c.dev.Stat(paths.Preview); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, ErrPreviewNotFound
+	}
+	return c.dev.OpenRead(paths.Preview)
 }
 
 func (c *adbController) WriteKMZ(guid string, kmz io.Reader, meta *PreviewMetadata) (*TransferResult, error) {
@@ -203,11 +314,23 @@ func (c *adbController) WriteKMZ(guid string, kmz io.Reader, meta *PreviewMetada
 	if err := c.dev.Push(kmz, paths.KMZ, 0o644); err != nil {
 		return nil, err
 	}
+	// Best-effort: refresh size after push.
+	var size int64
+	if stat, ok, _ := c.dev.Stat(paths.KMZ); ok {
+		size = stat.Size
+	}
 	return &TransferResult{
 		Success:       true,
 		GUID:          guid,
+		FileSize:      size,
 		TransferredAt: time.Now(),
 	}, nil
+}
+
+// WritePreview pushes a JPEG into the device's map_preview directory.
+func (c *adbController) WritePreview(guid string, jpg io.Reader) error {
+	paths := PathsFor(guid)
+	return c.dev.Push(jpg, paths.Preview, 0o644)
 }
 
 func (c *adbController) ClearSlot(guid string) error {

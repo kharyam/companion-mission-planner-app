@@ -62,6 +62,9 @@ func (s *Server) Run(ctx context.Context) error {
 		WriteTimeout: s.cfg.Server.WriteTimeout.Std(),
 	}
 
+	// Fan registry-level device events out to WebSocket subscribers.
+	go s.pumpDeviceEvents(ctx)
+
 	errCh := make(chan error, 1)
 	go func() {
 		s.logger.Info("listening", "addr", addr)
@@ -79,6 +82,28 @@ func (s *Server) Run(ctx context.Context) error {
 			return nil
 		}
 		return err
+	}
+}
+
+// pumpDeviceEvents subscribes to registry events and rebroadcasts them
+// as API-level WebSocket events. Backs off and retries if the underlying
+// goadb watcher dies (e.g. adb-server restart).
+func (s *Server) pumpDeviceEvents(ctx context.Context) {
+	const backoff = 5 * time.Second
+	for ctx.Err() == nil {
+		ch := s.registry.Watch(ctx)
+		for ev := range ch {
+			s.broadcast(Event{Type: ev.Type, Device: ev.DeviceID, At: ev.At})
+		}
+		// Channel closed; either ctx cancelled or watcher errored.
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
 	}
 }
 
