@@ -97,13 +97,18 @@ func (c *mtpController) ListSlots() ([]Slot, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Map of preview filenames → entry, so we can answer previewAvailable
-	// in one pass without re-listing per slot.
-	previews := map[string]mtp.FileEntry{}
+	// Build a set of preview-subfolder names so we can answer
+	// previewAvailable in one pass. DJI Fly's layout is
+	// map_preview/<GUID>/<GUID>.jpg — children of map_preview/ are
+	// folders named after the GUID. We treat presence of the folder
+	// (and a JPEG inside it) as "has preview".
+	previewFolders := map[string]mtp.FileEntry{}
 	if c.previewDir != nil {
 		pentries, _ := c.dev.ListDir(c.previewDir)
 		for _, p := range pentries {
-			previews[strings.ToUpper(p.Name)] = p
+			if p.IsFolder {
+				previewFolders[strings.ToUpper(p.Name)] = p
+			}
 		}
 	}
 	slots := make([]Slot, 0, len(entries))
@@ -124,7 +129,10 @@ func (c *mtpController) ListSlots() ([]Slot, error) {
 				break
 			}
 		}
-		_, previewExists := previews[strings.ToUpper(e.Name+".jpg")]
+		previewExists := false
+		if folder, ok := previewFolders[strings.ToUpper(e.Name)]; ok {
+			previewExists = c.hasPreviewFile(&folder, e.Name)
+		}
 		slots = append(slots, Slot{
 			GUID:             e.Name,
 			Name:             "Slot " + e.Name[:8],
@@ -136,6 +144,23 @@ func (c *mtpController) ListSlots() ([]Slot, error) {
 	return slots, nil
 }
 
+// hasPreviewFile checks whether the JPEG inside a map_preview/<GUID>/
+// folder exists. Cheap one-time listing per slot, only called when the
+// folder itself is present.
+func (c *mtpController) hasPreviewFile(folder *mtp.FileEntry, guid string) bool {
+	children, err := c.dev.ListDir(folder)
+	if err != nil {
+		return false
+	}
+	want := strings.ToUpper(guid + ".jpg")
+	for _, ch := range children {
+		if !ch.IsFolder && strings.ToUpper(ch.Name) == want {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *mtpController) ReadPreview(guid string) (io.ReadCloser, error) {
 	if err := c.locateWaypointDir(); err != nil {
 		return nil, err
@@ -143,23 +168,22 @@ func (c *mtpController) ReadPreview(guid string) (io.ReadCloser, error) {
 	if c.previewDir == nil {
 		return nil, ErrPreviewNotFound
 	}
-	entries, err := c.dev.ListDir(c.previewDir)
-	if err != nil {
-		return nil, err
+	// Navigate into map_preview/<GUID>/, then read <GUID>.jpg inside.
+	subFolder, err := findChild(c.dev, c.previewDir, guid)
+	if err != nil || subFolder == nil || !subFolder.IsFolder {
+		return nil, ErrPreviewNotFound
 	}
-	want := strings.ToUpper(guid + ".jpg")
-	for _, e := range entries {
-		if strings.ToUpper(e.Name) == want {
-			pr, pw := io.Pipe()
-			entry := e
-			go func() {
-				err := c.dev.GetFile(&entry, pw)
-				_ = pw.CloseWithError(err)
-			}()
-			return pr, nil
-		}
+	jpg, err := findChild(c.dev, subFolder, guid+".jpg")
+	if err != nil || jpg == nil {
+		return nil, ErrPreviewNotFound
 	}
-	return nil, ErrPreviewNotFound
+	pr, pw := io.Pipe()
+	entry := *jpg
+	go func() {
+		err := c.dev.GetFile(&entry, pw)
+		_ = pw.CloseWithError(err)
+	}()
+	return pr, nil
 }
 
 func (c *mtpController) WriteKMZ(guid string, kmz io.Reader, meta *PreviewMetadata) (*TransferResult, error) {
@@ -206,15 +230,25 @@ func (c *mtpController) WritePreview(guid string, jpg io.Reader) error {
 		// missing, the waypoint feature hasn't been initialized yet.
 		return fmt.Errorf("map_preview folder not yet present on device")
 	}
+	// Real on-disk layout is map_preview/<GUID>/<GUID>.jpg. DJI Fly
+	// creates the per-slot subfolder when it generates its own
+	// thumbnail for a placeholder, so it should already exist.
+	subFolder, err := findChild(c.dev, c.previewDir, guid)
+	if err != nil {
+		return fmt.Errorf("locate preview subfolder: %w", err)
+	}
+	if subFolder == nil {
+		return fmt.Errorf("preview subfolder %s does not exist (DJI Fly creates it on placeholder init)", guid)
+	}
 	previewName := guid + ".jpg"
-	if existing, _ := findChild(c.dev, c.previewDir, previewName); existing != nil {
+	if existing, _ := findChild(c.dev, subFolder, previewName); existing != nil {
 		_ = c.dev.Delete(existing)
 	}
 	buf, size, err := bufferReader(jpg)
 	if err != nil {
 		return err
 	}
-	_, err = c.dev.PutFile(c.previewDir, previewName, size, buf)
+	_, err = c.dev.PutFile(subFolder, previewName, size, buf)
 	return err
 }
 

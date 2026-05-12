@@ -14,7 +14,6 @@ import (
 	"context"
 	"fmt"
 	"image"
-	"image/draw"
 	"image/jpeg"
 	"io"
 	"math"
@@ -76,15 +75,19 @@ func Generate(ctx context.Context, meta *Metadata, opts Options) ([]byte, error)
 	dc := gg.NewContext(opts.Width, opts.Height)
 
 	if len(meta.Waypoints) >= 2 {
-		if err := drawMap(ctx, dc, meta, opts); err != nil {
+		proj, err := drawMap(ctx, dc, meta, opts)
+		if err != nil {
 			// fall back to solid backdrop on tile error
 			drawSolid(dc)
+			overlayWaypointsFallback(dc, meta)
+		} else {
+			overlayWaypoints(dc, meta, proj)
 		}
 	} else {
 		drawSolid(dc)
+		overlayWaypointsFallback(dc, meta)
 	}
 
-	overlayWaypoints(dc, meta)
 	overlayText(dc, meta)
 	overlayAttribution(dc)
 
@@ -100,50 +103,132 @@ func drawSolid(dc *gg.Context) {
 	dc.Clear()
 }
 
-// drawMap composites ESRI tiles covering the waypoint bbox into dc.
-func drawMap(ctx context.Context, dc *gg.Context, meta *Metadata, opts Options) error {
-	minLat, maxLat, minLng, maxLng := bbox(meta.Waypoints)
-	zoom := pickZoom(minLat, maxLat, minLng, maxLng, opts.Width, opts.Height)
-
-	xMin, yMax := lonLatToTile(minLng, minLat, zoom) // SW corner: min lng, min lat
-	xMax, yMin := lonLatToTile(maxLng, maxLat, zoom) // NE corner: max lng, max lat (lower y)
-
-	rows := yMax - yMin + 1
-	cols := xMax - xMin + 1
-	full := image.NewRGBA(image.Rect(0, 0, cols*256, rows*256))
-
-	for ty := yMin; ty <= yMax; ty++ {
-		for tx := xMin; tx <= xMax; tx++ {
-			img, err := fetchTile(ctx, opts.HTTP, zoom, tx, ty)
-			if err != nil {
-				return err
-			}
-			dx := (tx - xMin) * 256
-			dy := (ty - yMin) * 256
-			draw.Draw(full, image.Rect(dx, dy, dx+256, dy+256), img, image.Point{}, draw.Src)
-		}
-	}
-
-	// Crop/scale the composite into the gg context.
-	dc.DrawImageAnchored(scaleToFit(full, opts.Width, opts.Height), opts.Width/2, opts.Height/2, 0.5, 0.5)
-	return nil
+// projection records the slippy-map state needed to convert lat/lng
+// to canvas pixels. canvasLeft/canvasTop are the world-pixel coords of
+// the top-left of the rendered canvas.
+type projection struct {
+	zoom               int
+	canvasLeft, canvasTop float64
 }
 
-func overlayWaypoints(dc *gg.Context, meta *Metadata) {
+func (p projection) latLngToXY(lat, lng float64) (x, y float64) {
+	wx, wy := worldPx(lng, lat, p.zoom)
+	return wx - p.canvasLeft, wy - p.canvasTop
+}
+
+// drawMap composites ESRI tiles into dc so the canvas is centered on
+// the waypoint bbox at a zoom that keeps the bbox comfortably inside
+// the frame. Returns the projection so waypoint overlays can use the
+// exact same coordinate system.
+func drawMap(ctx context.Context, dc *gg.Context, meta *Metadata, opts Options) (projection, error) {
+	W, H := float64(opts.Width), float64(opts.Height)
+	minLat, maxLat, minLng, maxLng := bbox(meta.Waypoints)
+
+	// Add ~15% padding on each side so waypoints don't sit on the edge.
+	dLat := maxLat - minLat
+	dLng := maxLng - minLng
+	if dLat == 0 {
+		dLat = 0.0005
+	}
+	if dLng == 0 {
+		dLng = 0.0005
+	}
+	minLat -= dLat * 0.15
+	maxLat += dLat * 0.15
+	minLng -= dLng * 0.15
+	maxLng += dLng * 0.15
+
+	zoom := chooseZoom(minLat, maxLat, minLng, maxLng, W, H)
+
+	centerLat := (minLat + maxLat) / 2
+	centerLng := (minLng + maxLng) / 2
+	cx, cy := worldPx(centerLng, centerLat, zoom)
+	left := cx - W/2
+	top := cy - H/2
+
+	tileX0 := int(math.Floor(left / 256))
+	tileY0 := int(math.Floor(top / 256))
+	tileX1 := int(math.Floor((left + W - 1) / 256))
+	tileY1 := int(math.Floor((top + H - 1) / 256))
+
+	for ty := tileY0; ty <= tileY1; ty++ {
+		for tx := tileX0; tx <= tileX1; tx++ {
+			img, err := fetchTile(ctx, opts.HTTP, zoom, tx, ty)
+			if err != nil {
+				return projection{}, err
+			}
+			dx := float64(tx*256) - left
+			dy := float64(ty*256) - top
+			dc.DrawImage(img, int(dx), int(dy))
+		}
+	}
+	return projection{zoom: zoom, canvasLeft: left, canvasTop: top}, nil
+}
+
+func overlayWaypoints(dc *gg.Context, meta *Metadata, proj projection) {
 	if len(meta.Waypoints) == 0 {
 		return
 	}
-	// Project waypoints into image space using the bbox we'd used to fetch tiles.
-	minLat, maxLat, minLng, maxLng := bbox(meta.Waypoints)
-	if minLat == maxLat || minLng == maxLng {
+	// Draw the path first so circles sit on top.
+	dc.SetRGBA(1, 0.42, 0.21, 0.85)
+	dc.SetLineWidth(3)
+	for i, p := range meta.Waypoints {
+		x, y := proj.latLngToXY(p.Lat, p.Lng)
+		if i == 0 {
+			dc.MoveTo(x, y)
+		} else {
+			dc.LineTo(x, y)
+		}
+	}
+	dc.Stroke()
+
+	for i, p := range meta.Waypoints {
+		x, y := proj.latLngToXY(p.Lat, p.Lng)
+		// halo for legibility on busy tiles
+		dc.SetRGBA(0, 0, 0, 0.45)
+		dc.DrawCircle(x, y, 15)
+		dc.Fill()
+		dc.SetRGB(1, 0.42, 0.21)
+		dc.DrawCircle(x, y, 12)
+		dc.Fill()
+		dc.SetRGB(1, 1, 1)
+		dc.DrawStringAnchored(fmt.Sprintf("%d", i+1), x, y, 0.5, 0.4)
+	}
+}
+
+// overlayWaypointsFallback draws into a non-mapped canvas: just stretch
+// the bbox to a padded rectangle.
+func overlayWaypointsFallback(dc *gg.Context, meta *Metadata) {
+	if len(meta.Waypoints) == 0 {
 		return
+	}
+	minLat, maxLat, minLng, maxLng := bbox(meta.Waypoints)
+	dLat := maxLat - minLat
+	dLng := maxLng - minLng
+	if dLat == 0 {
+		dLat = 1
+	}
+	if dLng == 0 {
+		dLng = 1
 	}
 	w, h := dc.Width(), dc.Height()
 	pad := float64(DefaultPadding)
+	dc.SetRGBA(1, 0.42, 0.21, 0.85)
+	dc.SetLineWidth(3)
 	for i, p := range meta.Waypoints {
-		x := pad + (p.Lng-minLng)/(maxLng-minLng)*(float64(w)-2*pad)
-		y := pad + (1-(p.Lat-minLat)/(maxLat-minLat))*(float64(h)-2*pad)
-		dc.SetRGB(1, 0.42, 0.21) // KAM orange placeholder
+		x := pad + (p.Lng-minLng)/dLng*(float64(w)-2*pad)
+		y := pad + (1-(p.Lat-minLat)/dLat)*(float64(h)-2*pad)
+		if i == 0 {
+			dc.MoveTo(x, y)
+		} else {
+			dc.LineTo(x, y)
+		}
+	}
+	dc.Stroke()
+	for i, p := range meta.Waypoints {
+		x := pad + (p.Lng-minLng)/dLng*(float64(w)-2*pad)
+		y := pad + (1-(p.Lat-minLat)/dLat)*(float64(h)-2*pad)
+		dc.SetRGB(1, 0.42, 0.21)
 		dc.DrawCircle(x, y, 14)
 		dc.Fill()
 		dc.SetRGB(1, 1, 1)
@@ -194,27 +279,30 @@ func bbox(pts []Waypoint) (minLat, maxLat, minLng, maxLng float64) {
 	return
 }
 
-// pickZoom returns a slippy-map zoom level whose tile coverage roughly
-// matches the requested image size for the given bbox.
-func pickZoom(minLat, maxLat, minLng, maxLng float64, w, h int) int {
-	// Width-in-degrees and height-in-degrees at zoom z determine tile count.
-	const maxZoom = 18
-	for z := maxZoom; z >= 1; z-- {
-		xMin, yMax := lonLatToTile(minLng, minLat, z)
-		xMax, yMin := lonLatToTile(maxLng, maxLat, z)
-		if (xMax-xMin+1)*256 <= w*2 && (yMax-yMin+1)*256 <= h*2 {
+// chooseZoom returns the highest slippy-map zoom at which the bbox
+// (already padded) fits inside the canvas with a small safety margin.
+// The maximum is capped at ESRI World Imagery's reliable zoom level.
+func chooseZoom(minLat, maxLat, minLng, maxLng float64, W, H float64) int {
+	const minZoom, maxZoom = 1, 19
+	for z := maxZoom; z >= minZoom; z-- {
+		x0, y0 := worldPx(minLng, maxLat, z) // NW corner has smaller y
+		x1, y1 := worldPx(maxLng, minLat, z) // SE corner has larger y
+		if (x1-x0) <= W && (y1-y0) <= H {
 			return z
 		}
 	}
-	return 1
+	return minZoom
 }
 
-// lonLatToTile is the standard slippy-map projection.
-func lonLatToTile(lng, lat float64, zoom int) (x, y int) {
+// worldPx converts lat/lng to world-pixel coordinates at the given zoom.
+// At zoom z the world is 256 * 2^z pixels on each side. This is the
+// projection both tile fetching and waypoint overlay share, which is
+// what keeps the dots glued to the map.
+func worldPx(lng, lat float64, zoom int) (x, y float64) {
 	n := math.Pow(2, float64(zoom))
-	x = int(math.Floor((lng + 180.0) / 360.0 * n))
+	x = (lng + 180.0) / 360.0 * 256.0 * n
 	latRad := lat * math.Pi / 180.0
-	y = int(math.Floor((1.0 - math.Log(math.Tan(latRad)+1.0/math.Cos(latRad))/math.Pi) / 2.0 * n))
+	y = (1.0 - math.Log(math.Tan(latRad)+1.0/math.Cos(latRad))/math.Pi) / 2.0 * 256.0 * n
 	return
 }
 
@@ -238,22 +326,3 @@ func fetchTile(ctx context.Context, client *http.Client, z, x, y int) (image.Ima
 	return img, err
 }
 
-// scaleToFit returns src letterboxed into a w x h RGBA image.
-// We center-crop rather than letterbox to keep the preview filling the frame.
-func scaleToFit(src *image.RGBA, w, h int) image.Image {
-	sw := src.Bounds().Dx()
-	sh := src.Bounds().Dy()
-	if sw == w && sh == h {
-		return src
-	}
-	// Simple center-crop. For a proper scale we'd want nearest/bilinear;
-	// gg's DrawImageAnchored handles centering for us, so this is the
-	// minimum that produces a sane output. Replace with golang.org/x/image
-	// resize when we need quality.
-	return src.SubImage(image.Rect(
-		max((sw-w)/2, 0),
-		max((sh-h)/2, 0),
-		min((sw+w)/2, sw),
-		min((sh+h)/2, sh),
-	))
-}

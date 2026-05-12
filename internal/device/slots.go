@@ -15,17 +15,24 @@ const WaypointDir = "/sdcard/Android/data/dji.go.v5/files/waypoint"
 const PreviewDir = WaypointDir + "/map_preview"
 
 // SlotPaths returns the canonical on-device paths for a given GUID.
+//
+// DJI Fly's actual on-disk layout for previews is map_preview/<GUID>/<GUID>.jpg
+// (the GUID appears as both the parent folder name and the JPEG basename).
+// Earlier code mistakenly wrote map_preview/<GUID>.jpg directly — those
+// uploads were orphans, never picked up by DJI Fly's mission list.
 type SlotPaths struct {
-	Dir     string // .../waypoint/<GUID>
-	KMZ     string // .../waypoint/<GUID>/<GUID>.kmz
-	Preview string // .../waypoint/map_preview/<GUID>.jpg
+	Dir        string // .../waypoint/<GUID>
+	KMZ        string // .../waypoint/<GUID>/<GUID>.kmz
+	PreviewDir string // .../waypoint/map_preview/<GUID>
+	Preview    string // .../waypoint/map_preview/<GUID>/<GUID>.jpg
 }
 
 func PathsFor(guid string) SlotPaths {
 	return SlotPaths{
-		Dir:     path.Join(WaypointDir, guid),
-		KMZ:     path.Join(WaypointDir, guid, guid+".kmz"),
-		Preview: path.Join(PreviewDir, guid+".jpg"),
+		Dir:        path.Join(WaypointDir, guid),
+		KMZ:        path.Join(WaypointDir, guid, guid+".kmz"),
+		PreviewDir: path.Join(PreviewDir, guid),
+		Preview:    path.Join(PreviewDir, guid, guid+".jpg"),
 	}
 }
 
