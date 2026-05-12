@@ -131,7 +131,18 @@ func (c *mtpController) ListSlots() ([]Slot, error) {
 		}
 		previewExists := false
 		if folder, ok := previewFolders[strings.ToUpper(e.Name)]; ok {
-			previewExists = c.hasPreviewFile(&folder, e.Name)
+			// Look up the JPEG inside the per-slot folder and roll its
+			// mtime into the slot's LastModified. Without this, a
+			// /preview/regenerate (which only touches the JPEG) leaves
+			// the API's lastModified unchanged, so the UI's cache-bust
+			// query param doesn't change, so browsers serve the stale
+			// thumbnail forever.
+			if jpgMtime, ok := c.previewJPEGMtime(&folder, e.Name); ok {
+				previewExists = true
+				if jpgMtime.After(mtime) {
+					mtime = jpgMtime
+				}
+			}
 		}
 		slots = append(slots, Slot{
 			GUID:             e.Name,
@@ -148,17 +159,25 @@ func (c *mtpController) ListSlots() ([]Slot, error) {
 // folder exists. Cheap one-time listing per slot, only called when the
 // folder itself is present.
 func (c *mtpController) hasPreviewFile(folder *mtp.FileEntry, guid string) bool {
+	_, ok := c.previewJPEGMtime(folder, guid)
+	return ok
+}
+
+// previewJPEGMtime returns the modification time of map_preview/<GUID>/
+// <GUID>.jpg if it exists. Used to roll the JPEG mtime into the slot's
+// LastModified so cache-busting URLs change after /preview/regenerate.
+func (c *mtpController) previewJPEGMtime(folder *mtp.FileEntry, guid string) (time.Time, bool) {
 	children, err := c.dev.ListDir(folder)
 	if err != nil {
-		return false
+		return time.Time{}, false
 	}
 	want := strings.ToUpper(guid + ".jpg")
 	for _, ch := range children {
 		if !ch.IsFolder && strings.ToUpper(ch.Name) == want {
-			return true
+			return ch.ModifiedAt, true
 		}
 	}
-	return false
+	return time.Time{}, false
 }
 
 func (c *mtpController) ReadPreview(guid string) (io.ReadCloser, error) {
