@@ -60,24 +60,32 @@ func (c *mtpController) locateWaypointDir() error {
 	if err != nil {
 		return fmt.Errorf("list storages: %w", err)
 	}
+	c.logger.Debug("mtp storages enumerated", "count", len(storages))
+	for _, s := range storages {
+		c.logger.Debug("mtp storage", "name", s.Name, "id", s.StorageID)
+	}
 	const relative = "Android/data/dji.go.v5/files/waypoint"
+	var attempted []string
 	for i := range storages {
 		full := storages[i].Name + "/" + relative
+		attempted = append(attempted, full)
 		entry, err := c.dev.LookupPath(full)
 		if err != nil {
 			if errors.Is(err, mtp.ErrNotFound) {
+				c.logger.Debug("waypoint dir not on this storage", "path", full)
 				continue
 			}
 			return err
 		}
 		c.waypointDir = entry
-		// Preview dir is a sibling under the same parent; resolve lazily.
 		previewPath := full + "/map_preview"
 		if p, err := c.dev.LookupPath(previewPath); err == nil {
 			c.previewDir = p
 		}
+		c.logger.Info("located DJI Fly waypoint folder", "path", full, "object_id", entry.ObjectID)
 		return nil
 	}
+	c.logger.Warn("DJI Fly waypoint folder not found", "tried", attempted)
 	return fmt.Errorf("DJI Fly waypoint folder not found on any storage: %w", mtp.ErrNotFound)
 }
 

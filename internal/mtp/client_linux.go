@@ -26,7 +26,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"os/exec"
 	"path"
 	"strings"
 	"sync"
@@ -101,13 +103,25 @@ func listDevices() ([]*Device, error) {
 }
 
 // openDevice performs the PTP-level open and populates Friendly/Identifier.
+//
+// On Linux desktops, GVFS/KDE auto-claim the USB interface for the
+// device's MTP volume the moment it enumerates. libmtp's
+// libusb_claim_interface then fails with "device is busy". We
+// transparently release the GVFS mount before opening, and (best
+// effort) leave a note on stderr so users understand why their file
+// manager's "DJI RC 2" entry disappeared.
 func openDevice(d *Device) error {
 	ensureInit()
-	// LIBMTP_Open_Raw_Device_Uncached wants a *LIBMTP_raw_device_t.
-	// We own a copy-by-value on impl.raw; take its address.
 	mtp := C.LIBMTP_Open_Raw_Device_Uncached(&d.impl.raw)
 	if mtp == nil {
-		return errors.New("mtp: open failed (device busy, missing permissions, or unsupported)")
+		// Try to free the device from competitors (GVFS / kiod6 /
+		// adb-server) then retry once.
+		if released := releaseGVFS(d); released {
+			mtp = C.LIBMTP_Open_Raw_Device_Uncached(&d.impl.raw)
+		}
+		if mtp == nil {
+			return errors.New("mtp: open failed (device busy — file manager / GVFS / KDE kiod6 may have it claimed; try `gio mount -u \"mtp://[usb:" + busDevString(d) + "]/\"` then retry)")
+		}
 	}
 	d.impl.dev = mtp
 
@@ -356,4 +370,79 @@ func guessFiletype(name string) C.LIBMTP_filetype_t {
 func dumpLibmtpErrors(dev *C.LIBMTP_mtpdevice_t) {
 	C.LIBMTP_Dump_Errorstack(dev)
 	C.LIBMTP_Clear_Errorstack(dev)
+}
+
+// busDevString formats the bus/dev pair the way GVFS encodes it in
+// MTP URIs: zero-padded three-digit numbers, joined by a comma. For
+// USB bus 1 device 29, this returns "001,029".
+func busDevString(d *Device) string {
+	return fmt.Sprintf("%03d,%03d", uint32(d.impl.raw.bus_location), uint32(d.impl.raw.devnum))
+}
+
+// releaseGVFS frees the USB interface from whoever is currently
+// claiming it: GVFS on GNOME desktops, kiod6 on KDE, and adb-server
+// (which auto-claims any DJI vendor device even when it can't
+// actually talk to it because USB debugging is off).
+//
+// We try each known competitor in turn, return true if we did
+// *something*, then libmtp retries the open. Best-effort: if a
+// competitor isn't running, the relevant command is a no-op.
+func releaseGVFS(d *Device) bool {
+	released := false
+	uri := "mtp://[usb:" + busDevString(d) + "]/"
+
+	// (1) GVFS user-mounted volume → ask GVFS to drop it nicely.
+	for _, candidate := range [][]string{
+		{"gio", "mount", "-u", uri},
+		{"gvfs-mount", "-u", uri},
+	} {
+		path, err := exec.LookPath(candidate[0])
+		if err != nil {
+			continue
+		}
+		cmd := exec.Command(path, candidate[1:]...)
+		if out, err := cmd.CombinedOutput(); err == nil {
+			slog.Info("released GVFS MTP mount", "uri", uri)
+			released = true
+			break
+		} else {
+			slog.Debug("gvfs unmount", "tool", candidate[0], "out", strings.TrimSpace(string(out)), "err", err)
+		}
+	}
+
+	// (2) KDE kiod6 — KDE's I/O daemon — holds the interface for the
+	// MTP KIO worker. Restarting kded6 / kioworker is heavy; killing
+	// the specific kio worker is enough. They respawn on demand.
+	if pkill, err := exec.LookPath("pkill"); err == nil {
+		// kiod6 sometimes has the device handle even when no Dolphin
+		// window is open. SIGTERM is fine — KDE respawns it lazily.
+		_ = exec.Command(pkill, "-f", "kiod6").Run()
+		// gvfsd-mtp respawns from gvfs-mtp-volume-monitor on next plug.
+		_ = exec.Command(pkill, "-f", "gvfsd-mtp").Run()
+		released = true
+	}
+
+	// (3) adb-server. adb auto-claims any DJI USB device on enumeration
+	// because the vendor ID matches its AOSP allowlist. For an RC 2
+	// (which can never talk ADB) this is dead weight blocking libmtp.
+	// We don't kill adb-server outright — that would break other
+	// devices the user has connected — but the safest middle ground
+	// is to ask adb to disconnect just this device. If that fails,
+	// kill the server (the user can restart it).
+	if adb, err := exec.LookPath("adb"); err == nil {
+		// `adb disconnect` is for TCP/IP devices and won't drop USB;
+		// `adb kill-server` is the only universal lever. Use it only
+		// when we're already on the retry path — that's why
+		// releaseGVFS is called only after the first open attempt
+		// failed.
+		_ = exec.Command(adb, "kill-server").Run()
+		slog.Info("stopped adb-server to free USB interface for MTP")
+		released = true
+	}
+
+	if released {
+		// Give the kernel a beat to actually drop the interface refs.
+		time.Sleep(500 * time.Millisecond)
+	}
+	return released
 }

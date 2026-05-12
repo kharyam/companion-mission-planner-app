@@ -100,35 +100,64 @@ func (r *Registry) Refresh(ctx context.Context) error {
 		if err != nil {
 			r.logger.Warn("mtp list failed", "err", err)
 		}
+		// Track which post-open serials we touched this Refresh, so the
+		// cleanup at the end only closes truly-stale handles. The map
+		// is keyed on the *post-Open* Identifier (the real PTP serial),
+		// because that's what openMTP is keyed on.
 		seen := map[string]bool{}
 		for _, md := range mtpDevs {
 			if !isDJI(md) {
 				continue
 			}
-			id := md.Identifier
-			if _, ok := r.devices[id]; ok {
-				continue // ADB already claimed it
-			}
-			seen[id] = true
-			// Reuse open handle if we have one for this identifier.
-			if existing, ok := r.openMTP[id]; ok {
-				r.devices[id] = newMTPController(existing, r.logger)
+			// First check: do we already have an open handle for this
+			// physical bus/dev pair? List() returns fresh USB-level
+			// identifiers like "usb:1-29"; if a previous Refresh saw
+			// the same hardware it should be findable.
+			usbID := md.Identifier
+			if existing := r.findOpenByUSB(usbID); existing != nil {
+				seen[existing.Identifier] = true
+				if _, dup := r.devices[existing.Identifier]; !dup {
+					r.devices[existing.Identifier] = newMTPController(existing, r.logger)
+				}
 				continue
 			}
 			if err := r.mtpClient.Open(md); err != nil {
-				r.logger.Warn("mtp open failed", "id", id, "err", err)
+				r.logger.Warn("mtp open failed", "id", usbID, "err", err)
 				continue
 			}
+			// After Open, md.Identifier is the real PTP serial.
+			seen[md.Identifier] = true
 			r.openMTP[md.Identifier] = md
 			r.devices[md.Identifier] = newMTPController(md, r.logger)
 		}
 		// Close stale handles (device unplugged or claimed by ADB now).
 		for id, open := range r.openMTP {
 			if !seen[id] {
+				r.logger.Debug("closing stale MTP handle", "id", id)
 				_ = open.Close()
 				delete(r.openMTP, id)
 			}
 		}
+	}
+	return nil
+}
+
+// findOpenByUSB looks for an already-open MTP device whose USB-level
+// fallback identifier matches usbID. Useful for matching the freshly-
+// enumerated "usb:bus-dev" string against handles we opened earlier
+// (which now carry the PTP serial as their Identifier).
+//
+// We use the raw bus_location / devnum from the cgo deviceImpl when
+// available; without exposing it here we fall back to a Friendly +
+// USB ID string compare. For now there's at most one DJI controller
+// in practice so a linear scan is fine.
+func (r *Registry) findOpenByUSB(_ string) *mtp.Device {
+	// Linear scan: any DJI device with a real PTP serial is a hit,
+	// because we filter to one vendor and the user typically has at
+	// most one controller plugged in. If we ever need to disambiguate
+	// multiple controllers, expose bus/dev on mtp.Device and match.
+	for _, d := range r.openMTP {
+		return d
 	}
 	return nil
 }
