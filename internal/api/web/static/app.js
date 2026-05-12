@@ -190,43 +190,165 @@ async function loadSlots() {
   }
 }
 
+// ---------- working modal ----------
+
+// withWorkingModal shows a non-dismissable modal with a spinner + label
+// while fn runs. On success replaces it with a success modal; on
+// failure replaces with an error modal. Returns whatever fn resolves to
+// (or rethrows fn's error so callers can chain).
+async function withWorkingModal({ title, subtitle, successTitle, successDetail }, fn) {
+  const modal = openWorkingModal(title, subtitle);
+  try {
+    const result = await fn();
+    modal.close();
+    if (successTitle) {
+      showModal('ok', successTitle, successDetail || {});
+    }
+    return result;
+  } catch (err) {
+    modal.close();
+    showModal('bad', err.code || 'Failed', {
+      Reason: err.message || JSON.stringify(err),
+    });
+    throw err;
+  }
+}
+
+function openWorkingModal(title, subtitle) {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop working-backdrop';
+  backdrop.innerHTML = `
+    <div class="modal working" role="dialog" aria-modal="true" aria-busy="true">
+      <div class="working-spinner"></div>
+      <h3 class="modal-title"></h3>
+      <p class="modal-subtitle"></p>
+      <div class="modal-progress" style="display:none"></div>
+    </div>
+  `;
+  backdrop.querySelector('.modal-title').textContent = title;
+  if (subtitle) backdrop.querySelector('.modal-subtitle').textContent = subtitle;
+  const progressEl = backdrop.querySelector('.modal-progress');
+  document.body.appendChild(backdrop);
+  return {
+    close: () => backdrop.remove(),
+    setProgress: (msg) => {
+      if (!msg) {
+        progressEl.style.display = 'none';
+      } else {
+        progressEl.style.display = 'inline-block';
+        progressEl.textContent = msg;
+      }
+    },
+    setTitle: (t) => { backdrop.querySelector('.modal-title').textContent = t; },
+  };
+}
+
+// ---------- batch helpers ----------
+
+// runBatch loops over an array of slots calling fn(slot) for each and
+// updating the working modal's progress line. fn returns a result and
+// throws on failure; failures are accumulated and reported at the end
+// without aborting the rest of the batch.
+async function runBatch({ title, action, slots }, fn) {
+  if (!slots.length) {
+    toast('warn', 'Nothing to do', 'No slots on this device');
+    return;
+  }
+  const modal = openWorkingModal(title, `Processing ${slots.length} slot${slots.length === 1 ? '' : 's'}…`);
+  const ok = [], failed = [];
+  for (let i = 0; i < slots.length; i++) {
+    const s = slots[i];
+    modal.setProgress(`${i + 1} / ${slots.length} — ${s.guid.slice(0, 8)} (${s.name || ''})`);
+    try {
+      await fn(s);
+      ok.push(s);
+    } catch (err) {
+      failed.push({ slot: s, err });
+    }
+  }
+  modal.close();
+  if (failed.length === 0) {
+    showModal('ok', `${action} all done`, {
+      Succeeded: ok.length,
+      Failed: 0,
+    });
+  } else {
+    const detail = { Succeeded: ok.length, Failed: failed.length };
+    failed.slice(0, 3).forEach((f, i) => {
+      detail[`Error ${i + 1}`] = `${f.slot.guid.slice(0, 8)}: ${f.err.message || f.err.code || ''}`;
+    });
+    showModal('bad', `${action} finished with errors`, detail);
+  }
+  await loadSlots();
+}
+
+async function batchRegenerateAllPreviews() {
+  const slots = Array.from(document.querySelectorAll('#slot-list li[data-guid]')).map(li => {
+    return { guid: li.dataset.guid, name: li.querySelector('.slot-name')?.textContent };
+  });
+  await runBatch({
+    title: 'Regenerating all previews',
+    action: 'Preview regen',
+    slots,
+  }, (s) =>
+    api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(s.guid)}/preview/regenerate`, {
+      method: 'POST',
+    })
+  );
+}
+
+async function batchPushAllWaypointImages() {
+  const slots = Array.from(document.querySelectorAll('#slot-list li[data-guid]')).map(li => {
+    return { guid: li.dataset.guid, name: li.querySelector('.slot-name')?.textContent };
+  });
+  await runBatch({
+    title: 'Pushing waypoint images for all slots',
+    action: 'Waypoint image push',
+    slots,
+  }, (s) =>
+    api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(s.guid)}/waypoint-images`, {
+      method: 'POST',
+    })
+  );
+}
+
 // ---------- push waypoint images ----------
 
-async function pushWaypointImages(slot, btn) {
-  const original = btn.textContent;
-  btn.textContent = '⋯';
-  btn.disabled = true;
-  try {
-    const body = await api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(slot.guid)}/waypoint-images`, {
+async function pushWaypointImages(slot) {
+  const result = await withWorkingModal({
+    title: 'Pushing per-waypoint images',
+    subtitle: 'Rendering and uploading one satellite tile per waypoint…',
+  }, async () =>
+    api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(slot.guid)}/waypoint-images`, {
       method: 'POST',
+    })
+  ).catch(() => null);
+  if (result) {
+    showModal('ok', `Pushed ${result.count} waypoint image${result.count === 1 ? '' : 's'}`, {
+      Slot: slot.guid,
+      Count: result.count,
+      At: result.at,
     });
-    toast('ok', `Pushed ${body.count} waypoint image${body.count === 1 ? '' : 's'}`,
-      'Visible in DJI Fly mission editor next to each waypoint');
-  } catch (err) {
-    toast('bad', err.code || 'Push failed', err.message || JSON.stringify(err));
-  } finally {
-    btn.textContent = original;
-    btn.disabled = false;
   }
 }
 
 // ---------- regenerate preview ----------
 
-async function regeneratePreview(slot, btn) {
-  const originalText = btn.textContent;
-  btn.textContent = '⋯';
-  btn.disabled = true;
-  try {
-    await api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(slot.guid)}/preview/regenerate`, {
+async function regeneratePreview(slot) {
+  const result = await withWorkingModal({
+    title: 'Regenerating preview',
+    subtitle: 'Reading KMZ from device, rendering ESRI satellite tile, pushing back…',
+  }, async () =>
+    api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(slot.guid)}/preview/regenerate`, {
       method: 'POST',
+    })
+  ).catch(() => null);
+  if (result) {
+    await loadSlots();
+    showModal('ok', 'Preview regenerated', {
+      Slot: slot.guid,
+      At: result.at,
     });
-    toast('ok', 'Preview regenerated', 'Pushed fresh JPEG to the device');
-    await loadSlots(); // re-fetch list to bust thumbnail cache
-  } catch (err) {
-    toast('bad', err.code || 'Regen failed', err.message || JSON.stringify(err));
-  } finally {
-    btn.textContent = originalText;
-    btn.disabled = false;
   }
 }
 
@@ -514,6 +636,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('transfer-form').addEventListener('submit', submitTransfer);
   $('refresh-devices').addEventListener('click', loadDevices);
   $('refresh-slots').addEventListener('click', loadSlots);
+
+  $('batch-regen-previews').addEventListener('click', batchRegenerateAllPreviews);
+  $('batch-push-wp').addEventListener('click', batchPushAllWaypointImages);
 
   await pollHealth();
   setInterval(pollHealth, 10000);

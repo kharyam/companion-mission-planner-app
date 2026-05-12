@@ -39,7 +39,11 @@
   <section class="panel hidden" id="slots-panel">
     <div class="panel-head">
       <h2><span class="num">2</span> Slots <span class="dim" id="slots-device-name"></span></h2>
-      <button class="ghost" id="refresh-slots">Refresh</button>
+      <div class="head-actions">
+        <button class="ghost" id="batch-regen-previews" title="Regenerate previews for every slot">↻ All previews</button>
+        <button class="ghost" id="batch-push-wp" title="Push per-waypoint images for every slot">⎙ All waypoints</button>
+        <button class="ghost" id="refresh-slots">Refresh</button>
+      </div>
     </div>
     <ul class="slot-list" id="slot-list"></ul>
   </section>

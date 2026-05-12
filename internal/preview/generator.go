@@ -147,6 +147,7 @@ func Generate(ctx context.Context, meta *Metadata, opts Options) ([]byte, error)
 	}
 
 	overlayText(dc, meta)
+	overlayLogo(dc)
 	overlayAttribution(dc)
 
 	var buf bytes.Buffer
@@ -246,44 +247,53 @@ func overlayWaypoints(dc *gg.Context, meta *Metadata, proj projection) {
 	}
 }
 
-// drawMarker renders one waypoint marker: an outer white halo for
-// contrast against busy/dark map tiles, a thin red outline, a black
-// filled center, the waypoint number large and centered, and a tiny
-// KAM logo tucked into the upper-right corner.
+// drawMarker renders one waypoint marker: a white halo for contrast on
+// any background, a red KAM-brand filled center, and (for slot-preview
+// markers) the waypoint number. The KAM logo no longer lives on the
+// marker — it watermarks the full preview in overlayLogo instead.
 func drawMarker(dc *gg.Context, cx, cy float64, num int) {
-	const radius = 20.0
+	const radius = 14.0
 	// White halo (always visible against any background).
 	dc.SetRGBA(1, 1, 1, 0.95)
 	dc.DrawCircle(cx, cy, radius+3)
 	dc.Fill()
-	// Red ring for KAM branding.
+	// Red filled center.
 	dc.SetRGBA(1, 0.10, 0.10, 1)
-	dc.DrawCircle(cx, cy, radius+1.5)
-	dc.Fill()
-	// Black filled center.
-	dc.SetRGB(0, 0, 0)
 	dc.DrawCircle(cx, cy, radius)
 	dc.Fill()
 
-	// Logo in the upper-right of the circle.
-	if img := kamLogo(); img != nil {
-		const logoH = 12.0
-		ratio := float64(img.Bounds().Dx()) / float64(img.Bounds().Dy())
-		logoW := logoH * ratio
-		offX := radius * 0.35
-		offY := -radius * 0.55
-		scaled := scaleImage(img, int(logoW), int(logoH))
-		dc.DrawImageAnchored(scaled, int(cx+offX), int(cy+offY), 0.5, 0.5)
-	}
-
-	// Number, large and centered. num <= 0 means "no number" — DJI Fly
-	// overlays its own number on per-waypoint images, so we skip it
-	// there and let our marker just be the branded location pin.
+	// Number, large and centered. num <= 0 → no number (DJI Fly
+	// overlays its own waypoint number on per-waypoint images, and
+	// these markers also work fine as plain pins).
 	if num > 0 {
-		setFontSize(dc, 22)
+		setFontSize(dc, 18)
 		dc.SetRGB(1, 1, 1)
-		dc.DrawStringAnchored(fmt.Sprintf("%d", num), cx, cy+2, 0.5, 0.45)
+		dc.DrawStringAnchored(fmt.Sprintf("%d", num), cx, cy+1, 0.5, 0.45)
 	}
+}
+
+// overlayLogo draws the KAM logo as a transparent watermark in the
+// upper-right corner of the slot preview. The PNG is already RGBA
+// with a fully-transparent background, so DrawImage preserves the
+// see-through pixels.
+func overlayLogo(dc *gg.Context) {
+	img := kamLogo()
+	if img == nil {
+		return
+	}
+	// Scale to ~18% of canvas width, capped so it's never huge.
+	targetW := int(float64(dc.Width()) * 0.18)
+	if targetW > 120 {
+		targetW = 120
+	}
+	if targetW < 40 {
+		targetW = 40
+	}
+	ratio := float64(img.Bounds().Dy()) / float64(img.Bounds().Dx())
+	targetH := int(float64(targetW) * ratio)
+	scaled := scaleImage(img, targetW, targetH)
+	pad := 8
+	dc.DrawImage(scaled, dc.Width()-targetW-pad, pad)
 }
 
 // scaleImage is a tiny nearest-neighbor scaler that's good enough for
