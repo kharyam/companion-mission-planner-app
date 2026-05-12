@@ -509,7 +509,7 @@ OVERLAY:
 	// with a black "!"); nav waypoints stay pure satellite tiles.
 	_ = num
 	if hasAction {
-		drawActionBadgeCorner(dc, 12, 12)
+		drawActionBadgeCorner(dc)
 	}
 
 	var buf bytes.Buffer
@@ -519,25 +519,32 @@ OVERLAY:
 	return buf.Bytes(), nil
 }
 
-// drawActionBadgeCorner places the same gold "!" indicator we use on
-// slot-preview markers, but anchored to a screen position (not to a
-// waypoint marker). Used on per-waypoint images where there's no
-// marker to attach the badge to.
-//
-// padX/padY are distances from the upper-right corner of the canvas.
-func drawActionBadgeCorner(dc *gg.Context, padX, padY float64) {
-	bx := float64(dc.Width()) - padX
-	by := padY
-	const badgeR = 8.0
+// drawActionBadgeCorner places a gold "!" indicator in the upper-right
+// of the canvas. Sized as a fraction of the canvas height so it stays
+// visible after DJI Fly's editor downscales the image to its display.
+// On a 180x135 thumbnail this produces a ~36px-wide badge — at
+// DJI Fly's typical 60-80px display width it still reads as ~12px,
+// which is unambiguous.
+func drawActionBadgeCorner(dc *gg.Context) {
+	// Anchor the badge at 28% of canvas height in radius, scaled by H.
+	badgeR := float64(dc.Height()) * 0.18
+	if badgeR < 14 {
+		badgeR = 14
+	}
+	bx := float64(dc.Width()) - badgeR - 4
+	by := badgeR + 4
+	// Outer black ring for contrast against any tile content.
 	dc.SetRGBA(0, 0, 0, 1)
-	dc.DrawCircle(bx, by, badgeR+1)
+	dc.DrawCircle(bx, by, badgeR+2)
 	dc.Fill()
+	// Gold fill.
 	dc.SetRGBA(1, 0.85, 0.15, 1)
 	dc.DrawCircle(bx, by, badgeR)
 	dc.Fill()
-	setFontSize(dc, 13)
+	// "!" — sized so it visually fills the badge.
+	setFontSize(dc, badgeR*1.45)
 	dc.SetRGB(0, 0, 0)
-	dc.DrawStringAnchored("!", bx, by+1, 0.5, 0.5)
+	dc.DrawStringAnchored("!", bx, by+badgeR*0.06, 0.5, 0.5)
 }
 
 // --- helpers ----------------------------------------------------------------
