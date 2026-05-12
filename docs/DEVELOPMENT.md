@@ -21,11 +21,16 @@ pkg/kamtransfer/         public embedding API
 ## Build
 
 ```bash
-make build         # current platform
-make build-all     # linux/amd64 + macos amd64+arm64 + windows/amd64
+make build         # current platform, ADB-only (CGO_ENABLED=0)
+make build-mtp     # adds libmtp backend (CGO_ENABLED=1, needs libmtp-devel)
+make build-all     # linux/amd64 + macos amd64+arm64 + windows/amd64, ADB-only
 ```
 
 Binaries land in `dist/`. Version is `git describe --tags --always --dirty` injected via `-ldflags`.
+
+### Why two build flavors
+
+The default build is pure Go so it cross-compiles to all four platform targets from any host. The MTP build pulls in libmtp via cgo, which breaks easy cross-compile — each platform needs a native runner with its own libmtp install. We ship MTP behind a build tag (`linux && cgo`) so the default binary stays portable. The MTP path is opt-in for users who need it (most often, RC 2 owners).
 
 ## Test
 

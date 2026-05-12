@@ -1,5 +1,18 @@
 # Troubleshooting
 
+## "DJI RC 2 not detected at all"
+
+The consumer DJI RC 2 (controller bundled with Mini 4 Pro / Air 3) **does not support ADB**. DJI strips developer options out of the OS, so the 7-tap unlock trick used on other Android controllers doesn't apply. Use the MTP backend instead — see `INSTALLATION.md` → "MTP backend".
+
+Quick checks if MTP-built `list-devices` still doesn't see the RC 2:
+
+```bash
+mtp-detect           # ships with libmtp-examples; confirms libmtp sees the device
+gio mount --list     # if a "GProxyVolumeMonitorMTP" line shows the controller, the OS sees it
+```
+
+If `mtp-detect` works as root but not as your user, your udev rules are missing. libmtp ships them as `/usr/lib/udev/rules.d/69-libmtp.rules` — replug after the first install.
+
 ## "No devices found"
 
 1. Plug the USB cable into the controller and the host.

@@ -28,6 +28,24 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="2ca3", MODE="0666", GROUP="plugdev"
 
 Reload: `sudo udevadm control --reload-rules && sudo udevadm trigger`.
 
+### MTP backend (for DJI RC 2 and other ADB-disabled devices)
+
+The default pre-built binary uses ADB only. The DJI RC 2 ships with developer options stripped and **does not support ADB** — it must be reached via MTP. To enable the MTP backend you have to build from source with cgo:
+
+```bash
+# Fedora
+sudo dnf install libmtp libmtp-devel
+
+# Debian / Ubuntu
+sudo apt install libmtp-dev libmtp-runtime
+
+# Then build
+make build-mtp
+./dist/kam-transfer-mtp serve
+```
+
+The MTP backend coexists with ADB: both transports are scanned, and any device showing up on ADB takes precedence over the same device showing up on MTP. If the RC 2 doesn't appear in `list-devices`, run `mtp-detect` (from `libmtp-examples`) to confirm libmtp sees the device.
+
 ## macOS
 
 ```bash

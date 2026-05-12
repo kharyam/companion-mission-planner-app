@@ -55,6 +55,7 @@ See `docs/` for installation, API reference, CLI usage, configuration, troublesh
 
 - Go 1.22+
 - `adb` server reachable on `127.0.0.1:5037` (goadb speaks to a running adb-server). Most platforms bundle this with the Android Platform Tools.
+- **For DJI RC 2 support:** libmtp (build with `make build-mtp` after installing `libmtp-devel`). The consumer RC 2 doesn't support ADB. See `docs/INSTALLATION.md`.
 
 ## License
 

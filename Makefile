@@ -4,11 +4,16 @@ PKG := github.com/kamdynamics/kam-transfer
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X $(PKG)/internal/version.Version=$(VERSION)
 
-.PHONY: all build test tidy clean run lint
+# Default build is pure Go: ADB-only, cross-compiles cleanly.
+# `make build-mtp` adds the libmtp cgo backend; requires libmtp-devel.
+.PHONY: all build build-mtp test tidy clean run lint
 all: build
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY) ./cmd/kam-transfer
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY) ./cmd/kam-transfer
+
+build-mtp:
+	CGO_ENABLED=1 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-mtp ./cmd/kam-transfer
 
 run: build
 	./$(DIST)/$(BINARY) serve
@@ -28,15 +33,15 @@ clean:
 # Cross-compile targets
 .PHONY: build-linux build-macos build-macos-arm build-windows build-all
 build-linux:
-	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-linux-amd64 ./cmd/kam-transfer
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-linux-amd64 ./cmd/kam-transfer
 
 build-macos:
-	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-macos-amd64 ./cmd/kam-transfer
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-macos-amd64 ./cmd/kam-transfer
 
 build-macos-arm:
-	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-macos-arm64 ./cmd/kam-transfer
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-macos-arm64 ./cmd/kam-transfer
 
 build-windows:
-	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-windows-amd64.exe ./cmd/kam-transfer
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-windows-amd64.exe ./cmd/kam-transfer
 
 build-all: build-linux build-macos build-macos-arm build-windows

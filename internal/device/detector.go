@@ -13,6 +13,7 @@ import (
 
 	"github.com/kamdynamics/kam-transfer/internal/adb"
 	"github.com/kamdynamics/kam-transfer/internal/config"
+	"github.com/kamdynamics/kam-transfer/internal/mtp"
 	"github.com/kamdynamics/kam-transfer/internal/preview"
 )
 
@@ -36,6 +37,11 @@ type Registry struct {
 	devices map[string]Controller
 
 	adbClient *adb.Client
+	mtpClient *mtp.Client
+
+	// openMTP tracks currently-open MTP devices so Close can release
+	// them on Refresh + shutdown. Keyed by Device.Identifier.
+	openMTP map[string]*mtp.Device
 
 	// previewEnabled gates ESRI fetches. Set from cfg.Map.Provider.
 	previewEnabled bool
@@ -45,39 +51,93 @@ type Registry struct {
 // server triggers refreshes on demand and on websocket subscription.
 func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 	previewEnabled := cfg.Map.Provider == "esri-world-imagery"
+	r := &Registry{
+		cfg:            cfg,
+		logger:         logger,
+		devices:        map[string]Controller{},
+		mtpClient:      mtp.New(),
+		openMTP:        map[string]*mtp.Device{},
+		previewEnabled: previewEnabled,
+	}
 	t, err := adb.Dial(cfg.ADB.ServerHost, cfg.ADB.ServerPort)
 	if err != nil {
 		// We don't fail registry construction if adb-server is unreachable;
 		// the API will simply report zero devices until the user starts adb.
 		logger.Warn("adb unavailable at startup", "err", err)
-		return &Registry{cfg: cfg, logger: logger, devices: map[string]Controller{}, previewEnabled: previewEnabled}, nil
+		return r, nil
 	}
-	return &Registry{
-		cfg:            cfg,
-		logger:         logger,
-		devices:        map[string]Controller{},
-		adbClient:      adb.NewClient(t),
-		previewEnabled: previewEnabled,
-	}, nil
+	r.adbClient = adb.NewClient(t)
+	return r, nil
 }
 
 // Refresh re-scans the underlying transports and rebuilds the device map.
+//
+// Discovery order: ADB first, MTP second. If a device shows up on both
+// transports (rare for DJI hardware, but common for Android phones
+// running DJI Fly with USB debugging on), ADB wins — it's faster and
+// has richer file ops.
 func (r *Registry) Refresh(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.devices = map[string]Controller{}
-	if r.adbClient == nil {
-		return nil
+
+	// ADB
+	if r.adbClient != nil {
+		devs, err := r.adbClient.ListDevices()
+		if err != nil {
+			return err
+		}
+		for _, d := range devs {
+			r.devices[d.Serial] = newADBController(d, r.logger)
+		}
 	}
-	devs, err := r.adbClient.ListDevices()
-	if err != nil {
-		return err
-	}
-	for _, d := range devs {
-		ctrl := newADBController(d, r.logger)
-		r.devices[d.Serial] = ctrl
+
+	// MTP: enumerate raw devices, prune ones already covered by ADB,
+	// and (re)open the rest. Keep previously-open handles alive when
+	// the same identifier is still around to avoid USB churn.
+	if r.mtpClient != nil {
+		mtpDevs, err := r.mtpClient.List()
+		if err != nil {
+			r.logger.Warn("mtp list failed", "err", err)
+		}
+		seen := map[string]bool{}
+		for _, md := range mtpDevs {
+			if !isDJI(md) {
+				continue
+			}
+			id := md.Identifier
+			if _, ok := r.devices[id]; ok {
+				continue // ADB already claimed it
+			}
+			seen[id] = true
+			// Reuse open handle if we have one for this identifier.
+			if existing, ok := r.openMTP[id]; ok {
+				r.devices[id] = newMTPController(existing, r.logger)
+				continue
+			}
+			if err := r.mtpClient.Open(md); err != nil {
+				r.logger.Warn("mtp open failed", "id", id, "err", err)
+				continue
+			}
+			r.openMTP[md.Identifier] = md
+			r.devices[md.Identifier] = newMTPController(md, r.logger)
+		}
+		// Close stale handles (device unplugged or claimed by ADB now).
+		for id, open := range r.openMTP {
+			if !seen[id] {
+				_ = open.Close()
+				delete(r.openMTP, id)
+			}
+		}
 	}
 	return nil
+}
+
+// isDJI filters MTP devices down to DJI hardware by USB vendor ID.
+// 0x2ca3 is DJI Technology Co., Ltd. Other vendors detected over MTP
+// (random Android phones, cameras) aren't useful for this app.
+func isDJI(d *mtp.Device) bool {
+	return d.Vendor == 0x2ca3
 }
 
 // List returns one Info per connected device.
