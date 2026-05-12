@@ -40,35 +40,66 @@ func ExtractMission(r io.ReaderAt, size int64) (*Mission, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open kmz: %w", err)
 	}
-	preferred := []string{"wpmz/template.kml", "wpmz/waylines.wpml"}
+	// Search in priority order. Each candidate is tried; if it parses
+	// but yields zero waypoints (DJI Fly's editor strips template.kml
+	// down to a placeholder and moves the flight data into
+	// waylines.wpml on save), we fall through to the next.
+	candidates := []string{"wpmz/template.kml", "wpmz/waylines.wpml"}
 	byName := make(map[string]*zip.File, len(zr.File))
 	for _, f := range zr.File {
 		byName[f.Name] = f
 	}
-	for _, name := range preferred {
-		if f, ok := byName[name]; ok {
-			m, err := parseKMLFromZip(f)
-			if err != nil {
+	for _, name := range candidates {
+		f, ok := byName[name]
+		if !ok {
+			continue
+		}
+		m, err := parseKMLFromZip(f)
+		if err != nil {
+			// "no waypoints" is the soft fall-through case; any other
+			// parse error bubbles up.
+			if !errors.Is(err, errNoWaypoints) {
 				return nil, fmt.Errorf("parse %s: %w", name, err)
 			}
-			m.Source = name
-			return m, nil
+			continue
 		}
+		m.Source = name
+		return m, nil
 	}
-	// Fallback: any .kml or .wpml entry.
+	// Catch-all: any other .kml/.wpml entry the spec might add later.
 	for _, f := range zr.File {
 		lower := strings.ToLower(f.Name)
-		if strings.HasSuffix(lower, ".kml") || strings.HasSuffix(lower, ".wpml") {
-			m, err := parseKMLFromZip(f)
-			if err != nil {
-				return nil, fmt.Errorf("parse %s: %w", f.Name, err)
-			}
-			m.Source = f.Name
-			return m, nil
+		if !strings.HasSuffix(lower, ".kml") && !strings.HasSuffix(lower, ".wpml") {
+			continue
 		}
+		// Skip ones we already tried.
+		alreadyTried := false
+		for _, c := range candidates {
+			if c == f.Name {
+				alreadyTried = true
+				break
+			}
+		}
+		if alreadyTried {
+			continue
+		}
+		m, err := parseKMLFromZip(f)
+		if err != nil {
+			if errors.Is(err, errNoWaypoints) {
+				continue
+			}
+			return nil, fmt.Errorf("parse %s: %w", f.Name, err)
+		}
+		m.Source = f.Name
+		return m, nil
 	}
-	return nil, errors.New("no kml/wpml entry found in kmz")
+	return nil, errors.New("no waypoints found in any kml/wpml entry of kmz")
 }
+
+// errNoWaypoints is the sentinel parseKML returns when an entry parses
+// cleanly but contains zero waypoints — typically the empty
+// template.kml DJI Fly leaves behind on save.
+var errNoWaypoints = errors.New("no waypoints found in kml")
 
 func parseKMLFromZip(f *zip.File) (*Mission, error) {
 	rc, err := f.Open()
@@ -161,7 +192,7 @@ func parseKML(r io.Reader) (*Mission, error) {
 		}
 	}
 	if len(m.Waypoints) == 0 {
-		return nil, errors.New("no waypoints found in kml")
+		return nil, errNoWaypoints
 	}
 	return m, nil
 }

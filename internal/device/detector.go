@@ -14,6 +14,7 @@ import (
 
 	"github.com/kamdynamics/kam-transfer/internal/adb"
 	"github.com/kamdynamics/kam-transfer/internal/config"
+	"github.com/kamdynamics/kam-transfer/internal/kmz"
 	"github.com/kamdynamics/kam-transfer/internal/mtp"
 	"github.com/kamdynamics/kam-transfer/internal/names"
 	"github.com/kamdynamics/kam-transfer/internal/preview"
@@ -213,6 +214,62 @@ func slotNamesPath(cfg *config.Config) string {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(cfgPath), "slot-names.json")
+}
+
+// RegeneratePreview pulls the KMZ off the device for the named slot,
+// renders a fresh preview JPEG, and pushes it back. Useful when DJI
+// Fly's editor-Save regen has overwritten our previous push.
+func (r *Registry) RegeneratePreview(ctx context.Context, deviceID, guid string) error {
+	if err := r.Refresh(ctx); err != nil {
+		return err
+	}
+	c, err := r.Lookup(deviceID)
+	if err != nil {
+		return err
+	}
+	puller, ok := c.(KMZReader)
+	if !ok {
+		return fmt.Errorf("controller does not support KMZ read")
+	}
+	uploader, ok := c.(PreviewWriter)
+	if !ok {
+		return fmt.Errorf("controller does not support preview write")
+	}
+	var kmzBuf bytes.Buffer
+	if err := puller.ReadKMZ(guid, &kmzBuf); err != nil {
+		return fmt.Errorf("read kmz: %w", err)
+	}
+	mission, err := kmz.ExtractMission(bytes.NewReader(kmzBuf.Bytes()), int64(kmzBuf.Len()))
+	if err != nil {
+		return fmt.Errorf("parse kmz: %w", err)
+	}
+	// Use the saved slot name if available, else the KMZ's author label,
+	// else the truncated GUID.
+	displayName := r.names.Get(deviceID, guid)
+	if displayName == "" {
+		displayName = mission.Name
+	}
+	if displayName == "" {
+		displayName = "Slot " + guid[:8]
+	}
+	pm := &preview.Metadata{Name: displayName}
+	for _, w := range mission.Waypoints {
+		pm.Waypoints = append(pm.Waypoints, preview.Waypoint{Lat: w.Lat, Lng: w.Lng})
+	}
+	if mission.Date != nil {
+		pm.Date = *mission.Date
+	}
+	jpg, err := preview.Generate(ctx, pm, preview.Options{Width: r.cfg.Map.Width, Height: r.cfg.Map.Height})
+	if err != nil {
+		return fmt.Errorf("render: %w", err)
+	}
+	return uploader.WritePreview(guid, bytes.NewReader(jpg))
+}
+
+// KMZReader is implemented by controllers that can stream a slot's
+// KMZ back to the host. Used by RegeneratePreview.
+type KMZReader interface {
+	ReadKMZ(guid string, w io.Writer) error
 }
 
 // SetSlotName persists a user-assigned name for a slot.

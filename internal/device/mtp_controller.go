@@ -221,6 +221,24 @@ func (c *mtpController) WriteKMZ(guid string, kmz io.Reader, meta *PreviewMetada
 	}, nil
 }
 
+// ReadKMZ streams the slot's <GUID>.kmz back to the caller. Used by
+// Registry.RegeneratePreview to re-render the preview without making
+// the user re-upload from disk.
+func (c *mtpController) ReadKMZ(guid string, w io.Writer) error {
+	if err := c.locateWaypointDir(); err != nil {
+		return err
+	}
+	slotFolder, err := findChild(c.dev, c.waypointDir, guid)
+	if err != nil || slotFolder == nil {
+		return fmt.Errorf("slot %s: %w", guid, ErrSlotNotFound)
+	}
+	kmzEntry, err := findChild(c.dev, slotFolder, guid+".kmz")
+	if err != nil || kmzEntry == nil {
+		return fmt.Errorf("kmz for %s not found on device", guid)
+	}
+	return c.dev.GetFile(kmzEntry, w)
+}
+
 func (c *mtpController) WritePreview(guid string, jpg io.Reader) error {
 	if err := c.locateWaypointDir(); err != nil {
 		return err

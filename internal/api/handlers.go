@@ -248,6 +248,29 @@ func (s *Server) handleClearSlotName(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deviceId": deviceID, "guid": guid, "name": ""})
 }
 
+// handleRegeneratePreview pulls the slot's KMZ off the device, renders
+// a fresh preview from it, and pushes the new JPEG. The UI exposes
+// this so users can recover after DJI Fly's editor-Save trigger
+// clobbers our previous preview push.
+func (s *Server) handleRegeneratePreview(w http.ResponseWriter, r *http.Request) {
+	deviceID := pathParam(r, "deviceId")
+	guid := pathParam(r, "guid")
+	if !kmz.IsValidGUID(guid) {
+		writeError(w, http.StatusBadRequest, CodeInvalidGUID, "guid is malformed", map[string]any{"guid": guid})
+		return
+	}
+	if err := s.registry.RegeneratePreview(r.Context(), deviceID, guid); err != nil {
+		s.handleRegistryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deviceId": deviceID,
+		"guid":     guid,
+		"ok":       true,
+		"at":       time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if err := s.registry.Refresh(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, CodeInternalError, err.Error(), nil)

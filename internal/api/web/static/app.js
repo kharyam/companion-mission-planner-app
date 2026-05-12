@@ -152,6 +152,7 @@ async function loadSlots() {
           <div class="slot-name-row">
             <span class="slot-name" data-role="name">${escapeHTML(s.name || 'Slot')}</span>
             <button type="button" class="rename-btn" title="Rename slot" data-role="rename">✎</button>
+            <button type="button" class="rename-btn" title="Regenerate preview from on-device KMZ" data-role="regen">↻</button>
           </div>
           <div class="slot-guid">${escapeHTML(s.guid)}</div>
         </div>
@@ -169,6 +170,10 @@ async function loadSlots() {
         e.stopPropagation();
         startRename(li, s);
       });
+      li.querySelector('[data-role="regen"]').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await regeneratePreview(s, e.currentTarget);
+      });
       if (state.selectedSlot?.guid === s.guid) li.classList.add('selected');
       list.appendChild(li);
     }
@@ -177,6 +182,26 @@ async function loadSlots() {
     toast('bad', 'Could not list slots', e.message || e.code);
   } finally {
     $('slots-panel').classList.remove('loading');
+  }
+}
+
+// ---------- regenerate preview ----------
+
+async function regeneratePreview(slot, btn) {
+  const originalText = btn.textContent;
+  btn.textContent = '⋯';
+  btn.disabled = true;
+  try {
+    await api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(slot.guid)}/preview/regenerate`, {
+      method: 'POST',
+    });
+    toast('ok', 'Preview regenerated', 'Pushed fresh JPEG to the device');
+    await loadSlots(); // re-fetch list to bust thumbnail cache
+  } catch (err) {
+    toast('bad', err.code || 'Regen failed', err.message || JSON.stringify(err));
+  } finally {
+    btn.textContent = originalText;
+    btn.disabled = false;
   }
 }
 
@@ -370,12 +395,21 @@ function showModal(kind, title, details) {
   const subtitle = kind === 'ok'
     ? 'The KMZ landed on the controller. Open DJI Fly to verify the slot.'
     : 'Something went wrong before the bytes landed.';
+  const tip = kind === 'ok' ? `
+    <div class="modal-tip">
+      <strong>To keep this preview visible in DJI Fly:</strong> tap the slot
+      and fly directly. If you open the slot's editor and press <em>Save</em>,
+      DJI Fly regenerates the thumbnail and overwrites this one. Use the
+      <span class="kbd">↻</span> button next to the slot to re-push afterwards.
+    </div>
+  ` : '';
   backdrop.innerHTML = `
     <div class="modal ${kind}" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="modal-icon">${icon}</div>
       <h3 class="modal-title" id="modal-title"></h3>
       <p class="modal-subtitle"></p>
       <div class="modal-detail"><dl></dl></div>
+      ${tip}
       <div class="modal-actions">
         <button type="button" class="primary modal-close">OK</button>
       </div>

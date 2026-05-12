@@ -631,6 +631,28 @@ main {
   gap: 10px;
 }
 
+.modal-tip {
+  background: rgba(255, 0, 0, 0.06);
+  border-left: 3px solid var(--red);
+  padding: 12px 14px;
+  border-radius: 0 4px 4px 0;
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.6;
+  margin: -6px 0 18px;
+}
+.modal-tip strong { color: var(--red); }
+.modal-tip em { color: var(--text); font-style: normal; font-weight: 600; }
+.kbd {
+  display: inline-block;
+  font-family: var(--mono);
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border-strong);
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
 /* ----- animations ----- */
 
 @keyframes enter {
