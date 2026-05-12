@@ -92,9 +92,12 @@ func (r *Registry) Refresh(ctx context.Context) error {
 		}
 	}
 
-	// MTP: enumerate raw devices, prune ones already covered by ADB,
-	// and (re)open the rest. Keep previously-open handles alive when
-	// the same identifier is still around to avoid USB churn.
+	// MTP: enumerate raw devices and (re)open them. After both
+	// transports report in, we run a dedup pass below: any ADB device
+	// that's offline AND a DJI vendor device is treated as a shadow of
+	// whichever MTP entry has the same hardware (vendor 0x2ca3 means
+	// "this is a DJI controller; ADB will never authorize"), and the
+	// dead-weight ADB entry is removed.
 	if r.mtpClient != nil {
 		mtpDevs, err := r.mtpClient.List()
 		if err != nil {
@@ -136,6 +139,23 @@ func (r *Registry) Refresh(ctx context.Context) error {
 				r.logger.Debug("closing stale MTP handle", "id", id)
 				_ = open.Close()
 				delete(r.openMTP, id)
+			}
+		}
+
+		// Dedup: if we have a working MTP device, drop any ADB
+		// entries that are offline DJI devices — they're the same
+		// physical hardware and ADB won't ever authorize them.
+		if len(r.openMTP) > 0 {
+			for id, c := range r.devices {
+				info := c.Info()
+				if info.ConnectionType == ConnADB && !info.Authorized {
+					// Heuristic: ADB serials for DJI controllers are
+					// short alphanumeric (e.g. 6UZTN78001TD1T). If
+					// this entry is offline and we have a live MTP DJI
+					// device, treat it as a shadow of the MTP one.
+					r.logger.Debug("hiding shadow ADB entry (same hardware as MTP device)", "adb_id", id)
+					delete(r.devices, id)
+				}
 			}
 		}
 	}
