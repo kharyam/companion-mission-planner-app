@@ -11,6 +11,11 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # The default cross-compilable build is pure Go; the libmtp
+      # backend is opt-in (see Makefile build-mtp). Run vet/test
+      # without cgo so the runner doesn't need libmtp installed.
+      CGO_ENABLED: '0'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
