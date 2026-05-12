@@ -20,6 +20,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -454,11 +455,13 @@ type WaypointOptions struct {
 // RenderWaypoint produces a small JPEG centered on one waypoint. Used
 // to populate the per-waypoint images inside <GUID>/image/WP_*.jpg,
 // which DJI Fly displays next to each waypoint in its mission editor.
-// Nothing is drawn on top of the tile EXCEPT when hasAction is true —
-// then a small gold "!" badge lands in the upper-right corner so
-// capture/hover waypoints are visually distinct from navigation hops
-// even at the editor's small thumbnail size.
-func RenderWaypoint(ctx context.Context, lat, lng float64, num int, hasAction bool, opts WaypointOptions) ([]byte, error) {
+// Nothing is drawn on top of the satellite tile EXCEPT a gold banner
+// across the top with abbreviated action labels (PIC / REC+ / REC- /
+// HLD) when the waypoint has those wpml actions. Nav-only waypoints
+// render as pure satellite tiles.
+//
+// actions is the wpml:actionActuatorFunc list as parsed from the KMZ.
+func RenderWaypoint(ctx context.Context, lat, lng float64, num int, actions []string, opts WaypointOptions) ([]byte, error) {
 	if opts.Width == 0 {
 		opts.Width = 180
 	}
@@ -505,11 +508,10 @@ func RenderWaypoint(ctx context.Context, lat, lng float64, num int, hasAction bo
 OVERLAY:
 	_ = num
 	// Action waypoints get a 70%-opaque gold banner across the top
-	// edge of the image. A horizontal stripe survives DJI Fly's
-	// editor crop better than a corner badge and visually flags
-	// the image without obscuring the satellite tile underneath.
-	if hasAction {
-		drawActionBanner(dc)
+	// with abbreviated action labels (PIC / REC+ / REC- / HLD)
+	// horizontally centered. Nav-only waypoints stay clean.
+	if label := actionLabel(actions); label != "" {
+		drawActionBanner(dc, label)
 	}
 
 	var buf bytes.Buffer
@@ -519,16 +521,46 @@ OVERLAY:
 	return buf.Bytes(), nil
 }
 
-// drawActionBanner fills a thin gold stripe across the very top of the
-// canvas (5% of canvas height). Alpha 0.7 — opaque enough to flag the
-// thumbnail without burying the satellite tile underneath.
-func drawActionBanner(dc *gg.Context) {
+// drawActionBanner fills a gold stripe across the top of the canvas
+// (20% of canvas height) with the given action label centered
+// horizontally. Alpha 0.85 — opaque enough that black text on the
+// gold band stays legible after DJI Fly's editor downscale.
+func drawActionBanner(dc *gg.Context, label string) {
 	w := float64(dc.Width())
 	h := float64(dc.Height())
-	bannerH := h * 0.05
-	dc.SetRGBA(1, 0.78, 0.10, 0.7)
+	bannerH := h * 0.20
+	dc.SetRGBA(1, 0.78, 0.10, 0.85)
 	dc.DrawRectangle(0, 0, w, bannerH)
 	dc.Fill()
+	// Text: sized so a comfortable cap-height fits inside the band.
+	setFontSize(dc, bannerH*0.65)
+	dc.SetRGB(0, 0, 0)
+	dc.DrawStringAnchored(label, w/2, bannerH/2, 0.5, 0.5)
+}
+
+// actionLabel returns a space-separated abbreviation of the user-
+// visible actions in actions. Order is fixed (REC+/REC-/PIC/HLD) so
+// repeated calls with the same set produce a stable string. Camera-
+// setup actions like gimbalRotate / rotateYaw produce no label.
+func actionLabel(actions []string) string {
+	seen := map[string]bool{}
+	for _, a := range actions {
+		seen[a] = true
+	}
+	var parts []string
+	if seen["startRecord"] {
+		parts = append(parts, "REC+")
+	}
+	if seen["stopRecord"] {
+		parts = append(parts, "REC-")
+	}
+	if seen["takePhoto"] {
+		parts = append(parts, "PIC")
+	}
+	if seen["hover"] {
+		parts = append(parts, "HLD")
+	}
+	return strings.Join(parts, " ")
 }
 
 
