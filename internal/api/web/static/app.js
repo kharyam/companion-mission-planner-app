@@ -169,7 +169,7 @@ function selectSlot(s) {
 
 // ---------- transfer ----------
 
-function pickFile(file) {
+async function pickFile(file) {
   if (!file) return;
   if (!/\.kmz$/i.test(file.name)) {
     toast('warn', 'That doesn’t look like a KMZ', file.name);
@@ -177,6 +177,46 @@ function pickFile(file) {
   state.file = file;
   $('file-meta').textContent = `${file.name} · ${bytesHuman(file.size)}`;
   updateTransferButton();
+  await autoInspect(file);
+}
+
+// autoInspect uploads the picked KMZ to /api/kmz/inspect and auto-fills
+// the previewMetadata textarea with the extracted waypoints + name.
+// Silently no-ops if the user has typed their own JSON already.
+async function autoInspect(file) {
+  const ta = $('preview-metadata');
+  if (ta.value.trim()) return; // don't clobber user's input
+
+  const fd = new FormData();
+  fd.append('kmz', file);
+  try {
+    const res = await fetch('/api/kmz/inspect', { method: 'POST', body: fd });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast('warn', 'KMZ inspect failed', body?.error?.message || res.statusText);
+      return;
+    }
+    const payload = {
+      name: body.name,
+      date: body.date,
+      waypoints: body.waypoints,
+    };
+    // Strip null/empty fields so the JSON stays tidy.
+    Object.keys(payload).forEach(k => {
+      if (payload[k] == null || (Array.isArray(payload[k]) && payload[k].length === 0)) {
+        delete payload[k];
+      }
+    });
+    ta.value = JSON.stringify(payload, null, 2);
+    // Also pre-fill the mission name if user hasn't typed one.
+    if (!$('mission-name').value.trim() && body.name) {
+      $('mission-name').value = body.name;
+    }
+    toast('ok', `Parsed ${body.count} waypoint${body.count === 1 ? '' : 's'}`,
+      body.source ? `from ${body.source}` : null);
+  } catch (err) {
+    toast('warn', 'KMZ inspect threw', err.message);
+  }
 }
 
 function updateTransferButton() {

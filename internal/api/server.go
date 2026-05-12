@@ -120,6 +120,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/devices/{deviceId}/slots/{guid}/transfer", s.handleTransfer)
 	mux.HandleFunc("DELETE /api/devices/{deviceId}/slots/{guid}", s.handleClearSlot)
 	mux.HandleFunc("POST /api/devices/{deviceId}/refresh", s.handleRefresh)
+	mux.HandleFunc("POST /api/kmz/inspect", s.handleInspectKMZ)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 
 	// Admin UI

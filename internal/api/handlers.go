@@ -148,6 +148,67 @@ func (s *Server) handleClearSlot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "guid": guid})
 }
 
+// handleInspectKMZ parses an uploaded KMZ and returns the waypoints +
+// mission metadata in the exact JSON shape the transfer endpoint
+// accepts as `previewMetadata`. The UI calls this when the user picks
+// a file so the previewMetadata field can be auto-populated.
+func (s *Server) handleInspectKMZ(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(kmz.MaxSize); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "could not parse multipart form: "+err.Error(), nil)
+		return
+	}
+	file, header, err := r.FormFile("kmz")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "missing kmz field", nil)
+		return
+	}
+	defer file.Close()
+	if header.Size > kmz.MaxSize {
+		writeError(w, http.StatusRequestEntityTooLarge, CodeKMZTooLarge, "kmz exceeds size cap", map[string]any{"size": header.Size, "max": kmz.MaxSize})
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, kmz.MaxSize+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "read upload: "+err.Error(), nil)
+		return
+	}
+	mission, err := kmz.ExtractMission(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, CodeKMZInvalid, err.Error(), nil)
+		return
+	}
+
+	// Reshape into the exact previewMetadata schema the transfer
+	// handler expects, so the UI can plug it straight into the form.
+	type wp struct {
+		Lat float64 `json:"lat"`
+		Lng float64 `json:"lng"`
+	}
+	resp := struct {
+		Name      string `json:"name,omitempty"`
+		Date      string `json:"date,omitempty"`
+		Waypoints []wp   `json:"waypoints"`
+		Author    string `json:"author,omitempty"`
+		Source    string `json:"source,omitempty"`
+		Count     int    `json:"count"`
+	}{
+		Name:   strings.TrimSpace(strings.TrimSuffix(header.Filename, ".kmz")),
+		Author: mission.Author,
+		Source: mission.Source,
+		Count:  len(mission.Waypoints),
+	}
+	if mission.Name != "" {
+		resp.Name = mission.Name
+	}
+	if mission.Date != nil {
+		resp.Date = mission.Date.UTC().Format(time.RFC3339)
+	}
+	for _, p := range mission.Waypoints {
+		resp.Waypoints = append(resp.Waypoints, wp{Lat: p.Lat, Lng: p.Lng})
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if err := s.registry.Refresh(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, CodeInternalError, err.Error(), nil)
