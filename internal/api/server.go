@@ -54,7 +54,13 @@ func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	s.routes(mux)
 
-	handler := s.authMiddleware(corsMiddleware(s.cfg.Server.CORSOrigins, mux))
+	// CORS must wrap auth: a browser preflight (OPTIONS) carries no
+	// credentials, so if auth ran first it would 401 the preflight
+	// without CORS headers and the browser would report a generic
+	// "NetworkError when attempting to fetch resource". Putting CORS
+	// outermost also means auth's own 401 responses still carry the
+	// allow-origin header, so the planner can read the error body.
+	handler := corsMiddleware(s.cfg.Server.CORSOrigins, s.authMiddleware(mux))
 
 	addr := net.JoinHostPort(s.cfg.Server.Bind, strconv.Itoa(s.cfg.Server.Port))
 	hs := &http.Server{
