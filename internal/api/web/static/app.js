@@ -71,6 +71,17 @@ function withAuth(opts = {}) {
   return { ...opts, headers };
 }
 
+// withAuthURL appends ?token=… (or &token=…) to a URL. Required for
+// browser-driven loads that we can't put a header on: <img src>,
+// <a href> downloads, and the WebSocket. The server's auth middleware
+// accepts the token via query as well as header for exactly this case.
+function withAuthURL(url) {
+  const t = getToken();
+  if (!t) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(t)}`;
+}
+
 async function api(path, opts = {}) {
   const res = await fetch(path, withAuth(opts));
   if (res.status === 401) {
@@ -241,7 +252,7 @@ async function loadSlots() {
       // Cache-bust on lastModified so re-uploads visibly refresh.
       const cacheBust = s.lastModified ? `?v=${encodeURIComponent(s.lastModified)}` : '';
       const thumb = s.previewAvailable
-        ? `<img class="slot-thumb" src="${s.previewUrl}${cacheBust}" alt="" loading="lazy">`
+        ? `<img class="slot-thumb" src="${withAuthURL(s.previewUrl + cacheBust)}" alt="" loading="lazy">`
         : `<div class="slot-thumb slot-thumb-empty">no preview</div>`;
       const managed = s.managed !== false; // default true if backend somehow missed it
       const writeDisabled = managed ? '' : ' disabled';
@@ -515,9 +526,10 @@ function downloadKMZ(slot) {
   const qs = params.toString() ? `?${params.toString()}` : '';
   const url = `/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(slot.guid)}/kmz${qs}`;
   // Triggering the download via a hidden anchor lets the browser's
-  // Save dialog fire without leaving the page.
+  // Save dialog fire without leaving the page. Tokens travel in the
+  // query string because anchors can't carry custom headers.
   const a = document.createElement('a');
-  a.href = url;
+  a.href = withAuthURL(url);
   a.download = ''; // server's Content-Disposition wins
   document.body.appendChild(a);
   a.click();
@@ -916,9 +928,7 @@ function wireEvents() {
   // Browsers can't set custom headers on a WebSocket handshake, so the
   // server accepts the token via query string here (auth middleware in
   // server.go falls back to ?token=…).
-  const t = getToken();
-  const qs = t ? `?token=${encodeURIComponent(t)}` : '';
-  const ws = new WebSocket(`${proto}//${location.host}/api/events${qs}`);
+  const ws = new WebSocket(withAuthURL(`${proto}//${location.host}/api/events`));
   ws.addEventListener('message', (m) => {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
