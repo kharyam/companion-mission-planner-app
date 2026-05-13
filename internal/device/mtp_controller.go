@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kamdynamics/kam-transfer/internal/kmz"
@@ -16,22 +17,38 @@ import (
 )
 
 // mtpController wraps an open *mtp.Device with the Controller interface
-// the API and registry use. Path navigation is cached per-Refresh so
-// repeated slot listings don't re-walk the tree.
+// the API and registry use. Path navigation is cached for the lifetime
+// of the controller (which the registry keeps across Refreshes via
+// r.mtpControllers), so the expensive locateWaypointDir walk only runs
+// once per device connection.
 type mtpController struct {
 	dev    *mtp.Device
 	logger *slog.Logger
 
-	// Cached: the FileEntry for the .../waypoint directory. Nil until
-	// we successfully look it up, which we lazy-do on first use.
-	waypointDir *mtp.FileEntry
-	previewDir  *mtp.FileEntry
+	// locateMu guards everything related to the locateWaypointDir
+	// background walk. Reads of waypointDir / previewDir from outside
+	// must take this lock; once locateDone is closed the values are
+	// stable for the lifetime of the controller.
+	locateMu      sync.Mutex
+	waypointDir   *mtp.FileEntry
+	previewDir    *mtp.FileEntry
+	locateStarted bool
+	locateDone    chan struct{} // closed when walk finishes (success or fail)
+	locateErr     error
+	onLocated     func() // optional: invoked after walk completes
 }
 
-func newMTPController(d *mtp.Device, logger *slog.Logger) *mtpController {
-	return &mtpController{dev: d, logger: logger}
+func newMTPController(d *mtp.Device, logger *slog.Logger, onLocated func()) *mtpController {
+	return &mtpController{dev: d, logger: logger, onLocated: onLocated}
 }
 
+// Info is non-blocking: it returns whatever locate state has been
+// resolved so far. The walk runs in a goroutine started by kickoffLocate
+// (called eagerly when the controller is created), and the controller's
+// onLocated callback emits a WebSocket event when the walk completes so
+// the UI re-fetches and the DJIFlyDetected indicator becomes accurate.
+// Without this the /api/devices response would block on a multi-second
+// PTP walk through Android/data/.
 func (c *mtpController) Info() Info {
 	// Mirror the ADB modelLabel fallback — without it, controllers that
 	// libmtp opens but doesn't surface a Friendly string for produce an
@@ -42,6 +59,9 @@ func (c *mtpController) Info() Info {
 	if model == "" {
 		model = "Unknown DJI device"
 	}
+	c.locateMu.Lock()
+	found := c.waypointDir != nil
+	c.locateMu.Unlock()
 	return Info{
 		ID:             c.dev.Identifier,
 		Model:          model,
@@ -51,7 +71,49 @@ func (c *mtpController) Info() Info {
 		// the waypoint folder is reachable.
 		Authorized:     true,
 		State:          "online",
-		DJIFlyDetected: c.locateWaypointDir() == nil,
+		DJIFlyDetected: found,
+	}
+}
+
+// kickoffLocate starts the locateWaypointDir walk in a goroutine if
+// it hasn't been started yet. Safe to call repeatedly and concurrently
+// — only the first call spawns the goroutine. Returns immediately;
+// callers that need the result should use awaitLocate.
+func (c *mtpController) kickoffLocate() {
+	c.locateMu.Lock()
+	if c.locateStarted {
+		c.locateMu.Unlock()
+		return
+	}
+	c.locateStarted = true
+	c.locateDone = make(chan struct{})
+	c.locateMu.Unlock()
+	go c.runLocate()
+}
+
+// awaitLocate ensures the walk has started, then blocks until it
+// finishes. Used by methods that genuinely need waypointDir before
+// they can do their work (ListSlots, ReadKMZ, WriteKMZ, etc.).
+func (c *mtpController) awaitLocate() error {
+	c.kickoffLocate()
+	c.locateMu.Lock()
+	done := c.locateDone
+	c.locateMu.Unlock()
+	<-done
+	c.locateMu.Lock()
+	defer c.locateMu.Unlock()
+	return c.locateErr
+}
+
+func (c *mtpController) runLocate() {
+	err := c.locateWaypointDir()
+	c.locateMu.Lock()
+	c.locateErr = err
+	done := c.locateDone
+	c.locateMu.Unlock()
+	close(done)
+	if c.onLocated != nil {
+		c.onLocated()
 	}
 }
 
@@ -64,10 +126,10 @@ func (c *mtpController) Info() Info {
 // top-level storage name differs ("Internal shared storage", "Internal
 // storage", localized variants, etc.) — so we walk every storage and
 // pick whichever one has the Android/data tree.
+// locateWaypointDir does the actual PTP walk. Callers should go through
+// kickoffLocate / awaitLocate so the work is properly serialized; this
+// function is otherwise a plain synchronous routine.
 func (c *mtpController) locateWaypointDir() error {
-	if c.waypointDir != nil {
-		return nil
-	}
 	start := time.Now()
 	storages, err := c.dev.ListDir(nil)
 	if err != nil {
@@ -99,11 +161,18 @@ func (c *mtpController) locateWaypointDir() error {
 			}
 			return err
 		}
-		c.waypointDir = entry
-		previewPath := full + "/map_preview"
-		if p, err := c.dev.LookupPath(previewPath); err == nil {
-			c.previewDir = p
+		// Resolve map_preview as a direct child of the waypoint folder
+		// instead of LookupPath'ing the full string — that would re-walk
+		// all six segments of the Android tree and pay the metadata
+		// cost on /Android/data/ a second time.
+		var preview *mtp.FileEntry
+		if p, err := findChild(c.dev, entry, "map_preview"); err == nil && p != nil {
+			preview = p
 		}
+		c.locateMu.Lock()
+		c.waypointDir = entry
+		c.previewDir = preview
+		c.locateMu.Unlock()
 		c.logger.Info("located DJI Fly waypoint folder", "path", full, "object_id", entry.ObjectID, "elapsed", time.Since(start))
 		return nil
 	}
@@ -129,7 +198,7 @@ func storagePriority(name string) int {
 }
 
 func (c *mtpController) ListSlots() ([]Slot, error) {
-	if err := c.locateWaypointDir(); err != nil {
+	if err := c.awaitLocate(); err != nil {
 		return nil, err
 	}
 	entries, err := c.dev.ListDir(c.waypointDir)
@@ -220,7 +289,7 @@ func (c *mtpController) previewJPEGMtime(folder *mtp.FileEntry, guid string) (ti
 }
 
 func (c *mtpController) ReadPreview(guid string) (io.ReadCloser, error) {
-	if err := c.locateWaypointDir(); err != nil {
+	if err := c.awaitLocate(); err != nil {
 		return nil, err
 	}
 	if c.previewDir == nil {
@@ -245,7 +314,7 @@ func (c *mtpController) ReadPreview(guid string) (io.ReadCloser, error) {
 }
 
 func (c *mtpController) WriteKMZ(guid string, kmz io.Reader, meta *PreviewMetadata) (*TransferResult, error) {
-	if err := c.locateWaypointDir(); err != nil {
+	if err := c.awaitLocate(); err != nil {
 		return nil, err
 	}
 	// Find the slot folder. DJI Fly creates these via placeholder
@@ -292,7 +361,7 @@ type WaypointImage struct {
 // filename → waypoint index. Existing WP_*.jpg files are deleted so
 // DJI Fly doesn't show stale drone photos alongside our renders.
 func (c *mtpController) WriteWaypointImages(guid string, images []WaypointImage) error {
-	if err := c.locateWaypointDir(); err != nil {
+	if err := c.awaitLocate(); err != nil {
 		return err
 	}
 	slotFolder, err := findChild(c.dev, c.waypointDir, guid)
@@ -349,7 +418,7 @@ func (c *mtpController) WriteWaypointImages(guid string, images []WaypointImage)
 // Registry.RegeneratePreview to re-render the preview without making
 // the user re-upload from disk.
 func (c *mtpController) ReadKMZ(guid string, w io.Writer) error {
-	if err := c.locateWaypointDir(); err != nil {
+	if err := c.awaitLocate(); err != nil {
 		return err
 	}
 	slotFolder, err := findChild(c.dev, c.waypointDir, guid)
@@ -364,7 +433,7 @@ func (c *mtpController) ReadKMZ(guid string, w io.Writer) error {
 }
 
 func (c *mtpController) WritePreview(guid string, jpg io.Reader) error {
-	if err := c.locateWaypointDir(); err != nil {
+	if err := c.awaitLocate(); err != nil {
 		return err
 	}
 	if c.previewDir == nil {
@@ -402,7 +471,7 @@ func (c *mtpController) WritePreview(guid string, jpg io.Reader) error {
 // only DJI Fly can really delete the GUID. After ClearSlot the slot
 // shows up as a fresh, mostly-empty entry in the mission list.
 func (c *mtpController) ClearSlot(guid string) error {
-	if err := c.locateWaypointDir(); err != nil {
+	if err := c.awaitLocate(); err != nil {
 		return err
 	}
 	slotFolder, err := findChild(c.dev, c.waypointDir, guid)

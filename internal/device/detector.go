@@ -71,6 +71,12 @@ type Registry struct {
 	// managed records the per-slot user opt-out (default true; only
 	// false when the user has explicitly unchecked "managed").
 	managed *managed.Store
+
+	// eventBus carries internally-produced events (e.g. an MTP
+	// controller's background locateWaypointDir finishing) to whoever
+	// is currently consuming Watch's channel. Buffered so producers
+	// never block; drops on overflow with a debug log.
+	eventBus chan Event
 }
 
 // NewRegistry creates a registry. It does not start polling; the API
@@ -96,6 +102,7 @@ func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 		mtpClient:      mtp.New(),
 		openMTP:        map[string]*mtp.Device{},
 		mtpControllers: map[string]*mtpController{},
+		eventBus:       make(chan Event, 64),
 		previewEnabled: previewEnabled,
 		names:          store,
 		order:          orderStore,
@@ -249,13 +256,39 @@ func (r *Registry) Refresh(ctx context.Context) error {
 // PTP path walk run at most once per connection — without it, every
 // Refresh creates a fresh controller with a nil waypointDir cache and
 // the walk repeats. Caller must hold r.mu.
+//
+// On first creation we also kick off the walk in a background goroutine
+// (kickoffLocate is idempotent). The onLocated callback emits a
+// device.refreshed event when the walk finishes so the UI's WebSocket
+// handler re-fetches /api/devices and the DJIFlyDetected indicator
+// flips from false to its true value without the user waiting on the
+// initial /api/devices call.
 func (r *Registry) controllerFor(d *mtp.Device) *mtpController {
 	if c, ok := r.mtpControllers[d.Identifier]; ok {
 		return c
 	}
-	c := newMTPController(d, r.logger)
-	r.mtpControllers[d.Identifier] = c
+	deviceID := d.Identifier
+	c := newMTPController(d, r.logger, func() {
+		r.emit(Event{Type: "device.refreshed", DeviceID: deviceID})
+	})
+	r.mtpControllers[deviceID] = c
+	c.kickoffLocate()
 	return c
+}
+
+// emit pushes an event onto the internal bus that Watch drains into
+// its output channel. Non-blocking — drops on overflow rather than
+// blocking the caller (typically a goroutine completing a background
+// walk; we'd rather lose a refresh event than wedge the walk).
+func (r *Registry) emit(ev Event) {
+	if ev.At.IsZero() {
+		ev.At = time.Now()
+	}
+	select {
+	case r.eventBus <- ev:
+	default:
+		r.logger.Debug("eventBus full, dropping event", "type", ev.Type, "deviceId", ev.DeviceID)
+	}
 }
 
 // findOpenByBusDev looks for an already-open MTP device whose current
@@ -555,6 +588,23 @@ func (r *Registry) Watch(ctx context.Context) <-chan Event {
 			r.pollMTPHotplug(ctx, out)
 		})
 	}
+	// Drain the internal event bus into the same output channel. This
+	// is how goroutines that don't have a direct handle on `out` (e.g.
+	// the locateWaypointDir background walker) publish events.
+	wg.Go(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev := <-r.eventBus:
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	})
 
 	go func() {
 		wg.Wait()
