@@ -27,8 +27,78 @@ function toast(kind, title, detail) {
 
 // ---------- api helpers ----------
 
+// The server's auth middleware accepts the token via:
+//   - X-KAM-Token header (preferred for REST — keeps it out of URLs/logs)
+//   - Authorization: Bearer …
+//   - ?token=… query (used by the WebSocket since browsers can't set
+//     headers on the WS handshake)
+// We cache it in sessionStorage so the URL ?token=… is only needed
+// once per tab. The bootstrap captures it on load.
+const TOKEN_KEY = 'kamToken';
+
+function getToken() {
+  try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
+}
+
+function setToken(t) {
+  try {
+    if (t) sessionStorage.setItem(TOKEN_KEY, t);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  } catch {}
+}
+
+// captureTokenFromURL pulls ?token=… out of the current URL, stores it,
+// and strips it from the address bar so it doesn't sit in history or
+// get copied into a bookmark.
+function captureTokenFromURL() {
+  const url = new URL(location.href);
+  const t = url.searchParams.get('token');
+  if (t) {
+    setToken(t);
+    url.searchParams.delete('token');
+    history.replaceState(null, '', url.toString());
+  }
+}
+
+// withAuth returns a copy of opts with X-KAM-Token merged into headers.
+// Use for every fetch the UI makes — both api() and the direct fetch
+// calls for FormData uploads (which don't go through api()).
+function withAuth(opts = {}) {
+  const t = getToken();
+  if (!t) return opts;
+  const headers = new Headers(opts.headers || {});
+  headers.set('X-KAM-Token', t);
+  return { ...opts, headers };
+}
+
+// withAuthURL appends ?token=… (or &token=…) to a URL. Required for
+// browser-driven loads that we can't put a header on: <img src>,
+// <a href> downloads, and the WebSocket. The server's auth middleware
+// accepts the token via query as well as header for exactly this case.
+function withAuthURL(url) {
+  const t = getToken();
+  if (!t) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(t)}`;
+}
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, opts);
+  const res = await fetch(path, withAuth(opts));
+  if (res.status === 401) {
+    // Token is missing or wrong — drop the stale value and reprompt.
+    setToken('');
+    await promptForToken('Session token rejected (401). Paste a valid token to continue.');
+    // After the user supplies one, retry once.
+    const retry = await fetch(path, withAuth(opts));
+    const retryText = await retry.text();
+    let retryBody;
+    try { retryBody = retryText ? JSON.parse(retryText) : null; } catch { retryBody = { _raw: retryText }; }
+    if (!retry.ok) {
+      const err = retryBody?.error || { code: 'HTTP_' + retry.status, message: retryText || retry.statusText };
+      throw err;
+    }
+    return retryBody;
+  }
   const text = await res.text();
   let body;
   try { body = text ? JSON.parse(text) : null; } catch { body = { _raw: text }; }
@@ -37,6 +107,43 @@ async function api(path, opts = {}) {
     throw err;
   }
   return body;
+}
+
+// promptForToken shows a modal asking the user to paste a token.
+// Empty submission is allowed — if the server has auth disabled the
+// middleware ignores the token, and if it's enabled api()'s own 401
+// handler will re-prompt. Backdrop click / Escape are not offered
+// because the surrounding UI is non-functional without an answer.
+function promptForToken(message) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true">
+        <h3 class="modal-title">Authentication token</h3>
+        <p class="modal-subtitle"></p>
+        <input type="password" class="token-input" autocomplete="off" spellcheck="false"
+               style="width:100%;padding:8px;margin-top:8px;font-family:monospace">
+        <div class="modal-actions" style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+          <button type="button" class="ghost skip">No auth</button>
+          <button type="button" class="primary save">Save</button>
+        </div>
+      </div>
+    `;
+    backdrop.querySelector('.modal-subtitle').textContent = message
+      || 'Paste the auth token configured in the server’s config.yaml (auth.token). If your server runs without auth, choose "No auth".';
+    document.body.appendChild(backdrop);
+    const input = backdrop.querySelector('.token-input');
+    const finish = (v) => {
+      setToken(v || '');
+      backdrop.remove();
+      resolve(v || '');
+    };
+    backdrop.querySelector('.save').addEventListener('click', () => finish(input.value.trim()));
+    backdrop.querySelector('.skip').addEventListener('click', () => finish(''));
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') finish(input.value.trim()); });
+    input.focus();
+  });
 }
 
 function bytesHuman(n) {
@@ -145,7 +252,7 @@ async function loadSlots() {
       // Cache-bust on lastModified so re-uploads visibly refresh.
       const cacheBust = s.lastModified ? `?v=${encodeURIComponent(s.lastModified)}` : '';
       const thumb = s.previewAvailable
-        ? `<img class="slot-thumb" src="${s.previewUrl}${cacheBust}" alt="" loading="lazy">`
+        ? `<img class="slot-thumb" src="${withAuthURL(s.previewUrl + cacheBust)}" alt="" loading="lazy">`
         : `<div class="slot-thumb slot-thumb-empty">no preview</div>`;
       const managed = s.managed !== false; // default true if backend somehow missed it
       const writeDisabled = managed ? '' : ' disabled';
@@ -419,9 +526,10 @@ function downloadKMZ(slot) {
   const qs = params.toString() ? `?${params.toString()}` : '';
   const url = `/api/devices/${encodeURIComponent(state.selectedDevice.id)}/slots/${encodeURIComponent(slot.guid)}/kmz${qs}`;
   // Triggering the download via a hidden anchor lets the browser's
-  // Save dialog fire without leaving the page.
+  // Save dialog fire without leaving the page. Tokens travel in the
+  // query string because anchors can't carry custom headers.
   const a = document.createElement('a');
-  a.href = url;
+  a.href = withAuthURL(url);
   a.download = ''; // server's Content-Disposition wins
   document.body.appendChild(a);
   a.click();
@@ -608,7 +716,7 @@ async function autoInspect(file) {
   const fd = new FormData();
   fd.append('kmz', file);
   try {
-    const res = await fetch('/api/kmz/inspect', { method: 'POST', body: fd });
+    const res = await fetch('/api/kmz/inspect', withAuth({ method: 'POST', body: fd }));
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       toast('warn', 'KMZ inspect failed', body?.error?.message || res.statusText);
@@ -713,7 +821,7 @@ async function submitTransfer(e) {
 
   const startedAt = performance.now();
   try {
-    const res = await fetch(url, { method: 'POST', body: fd });
+    const res = await fetch(url, withAuth({ method: 'POST', body: fd }));
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       const err = body.error || { message: res.statusText };
@@ -817,7 +925,10 @@ function wireDropzone() {
 
 function wireEvents() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${proto}//${location.host}/api/events`);
+  // Browsers can't set custom headers on a WebSocket handshake, so the
+  // server accepts the token via query string here (auth middleware in
+  // server.go falls back to ?token=…).
+  const ws = new WebSocket(withAuthURL(`${proto}//${location.host}/api/events`));
   ws.addEventListener('message', (m) => {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
@@ -840,6 +951,18 @@ function escapeHTML(s) {
 // ---------- bootstrap ----------
 
 window.addEventListener('DOMContentLoaded', async () => {
+  // Token first — every other call depends on it.
+  // 1. ?token=… in the URL wins (single-shot bootstrap).
+  // 2. Otherwise reuse whatever's in sessionStorage from earlier in
+  //    this tab.
+  // 3. Otherwise prompt. The modal accepts an empty submission for
+  //    servers running with auth disabled (config.auth.token == ""),
+  //    in which case the middleware ignores the header anyway.
+  captureTokenFromURL();
+  if (!getToken()) {
+    await promptForToken();
+  }
+
   wireDropzone();
   $('transfer-form').addEventListener('submit', submitTransfer);
   $('refresh-devices').addEventListener('click', loadDevices);
