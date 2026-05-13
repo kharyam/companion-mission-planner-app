@@ -140,7 +140,17 @@ func (s *Server) routes(mux *http.ServeMux) {
 	staticFS, err := web.StaticFS()
 	if err == nil {
 		fileServer := http.FileServer(http.FS(staticFS))
-		mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", fileServer))
+		// Force browsers to revalidate every request. go:embed gives all
+		// files a zero Last-Modified, which browsers then cache
+		// aggressively under their freshness heuristic — and that meant
+		// a rebuild + binary restart still served the user's previously-
+		// cached app.js. no-store is the simplest fix; the assets are
+		// small and the server is local.
+		staticHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			fileServer.ServeHTTP(w, r)
+		})
+		mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", staticHandler))
 		mux.HandleFunc("GET /ui/", s.handleUIIndex)
 		mux.HandleFunc("GET /ui", s.handleUIIndex)
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
