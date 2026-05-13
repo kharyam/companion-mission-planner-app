@@ -139,10 +139,17 @@ func Generate(ctx context.Context, meta *Metadata, opts Options) ([]byte, error)
 	opts = opts.withDefaults()
 	dc := gg.NewContext(opts.Width, opts.Height)
 
-	if len(meta.Waypoints) >= 2 {
+	// Any waypoint count >= 1 gets a real satellite render. The bbox
+	// padding handles the degenerate single-point case (dLat / dLng
+	// reset to 0.0005° when zero, giving a ~50m radius around the
+	// point at the equator), and chooseZoom picks the deepest zoom
+	// that still fits. Without this floor of 1, callers that send a
+	// single anchor point (e.g. mission-planner falling back to a
+	// subject centroid when there are no manual waypoints) get the
+	// dark drawSolid backdrop and a black-with-logo preview.
+	if len(meta.Waypoints) >= 1 {
 		proj, err := drawMap(ctx, dc, meta, opts)
 		if err != nil {
-			// fall back to solid backdrop on tile error
 			slog.WarnContext(ctx, "preview: ESRI tile fetch failed, rendering dark fallback (DJI Fly will show a near-black preview with just the KAM logo)",
 				"err", err,
 				"waypoints", len(meta.Waypoints),
@@ -153,9 +160,8 @@ func Generate(ctx context.Context, meta *Metadata, opts Options) ([]byte, error)
 			overlayWaypoints(dc, meta, proj)
 		}
 	} else {
-		slog.DebugContext(ctx, "preview: <2 waypoints, rendering solid backdrop only", "waypoints", len(meta.Waypoints))
+		slog.DebugContext(ctx, "preview: 0 waypoints, rendering solid backdrop only")
 		drawSolid(dc)
-		overlayWaypointsFallback(dc, meta)
 	}
 
 	overlayText(dc, meta)
