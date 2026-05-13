@@ -32,9 +32,18 @@ func newMTPController(d *mtp.Device, logger *slog.Logger) *mtpController {
 }
 
 func (c *mtpController) Info() Info {
+	// Mirror the ADB modelLabel fallback — without it, controllers that
+	// libmtp opens but doesn't surface a Friendly string for produce an
+	// empty Model in /api/devices, which downstream consumers (e.g. the
+	// planner's transfer-history schema requiring deviceName ≥ 1 char)
+	// then reject.
+	model := c.dev.Friendly
+	if model == "" {
+		model = "Unknown DJI device"
+	}
 	return Info{
 		ID:             c.dev.Identifier,
-		Model:          c.dev.Friendly,
+		Model:          model,
 		ConnectionType: ConnMTP,
 		// MTP doesn't have an auth dance: if the device shows up,
 		// it's already accessible. DJIFlyDetected mirrors whether
