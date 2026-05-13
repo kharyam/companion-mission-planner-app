@@ -18,6 +18,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -142,12 +143,17 @@ func Generate(ctx context.Context, meta *Metadata, opts Options) ([]byte, error)
 		proj, err := drawMap(ctx, dc, meta, opts)
 		if err != nil {
 			// fall back to solid backdrop on tile error
+			slog.WarnContext(ctx, "preview: ESRI tile fetch failed, rendering dark fallback (DJI Fly will show a near-black preview with just the KAM logo)",
+				"err", err,
+				"waypoints", len(meta.Waypoints),
+				"hint", "verify the companion host can reach https://server.arcgisonline.com (curl that URL from the server; check HTTP_PROXY / DNS / outbound firewall)")
 			drawSolid(dc)
 			overlayWaypointsFallback(dc, meta)
 		} else {
 			overlayWaypoints(dc, meta, proj)
 		}
 	} else {
+		slog.DebugContext(ctx, "preview: <2 waypoints, rendering solid backdrop only", "waypoints", len(meta.Waypoints))
 		drawSolid(dc)
 		overlayWaypointsFallback(dc, meta)
 	}
@@ -622,14 +628,17 @@ func fetchTile(ctx context.Context, client *http.Client, z, x, y int) (image.Ima
 	req.Header.Set("User-Agent", "kam-transfer/0.1 (+https://github.com/kamdynamics)")
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("GET %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("tile %d/%d/%d: HTTP %d", z, x, y, resp.StatusCode)
+		return nil, fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)
 	}
 	img, _, err := image.Decode(resp.Body)
-	return img, err
+	if err != nil {
+		return nil, fmt.Errorf("decode %s: %w", url, err)
+	}
+	return img, nil
 }
 
