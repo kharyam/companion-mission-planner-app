@@ -151,22 +151,25 @@ func (r *Registry) Refresh(ctx context.Context) error {
 				continue
 			}
 			usbID := md.Identifier
-			// Reuse an existing handle only if it still works — another
-			// process opening MTP (e.g. our own probe-cat) can quietly
-			// invalidate libmtp's USB claim, after which LIBMTP_Get_Storage
-			// returns 0 entries with no error. We sniff for that and
-			// fall through to a clean re-open.
-			if existing := r.findOpenByUSB(usbID); existing != nil {
-				if mtpHandleAlive(existing) {
+			// Reuse an existing handle only if it's the same physical
+			// connection AND it still answers on the wire. The
+			// bus/devnum check catches unplug+replug between refreshes
+			// (kernel assigns a new devnum on replug), and Ping catches
+			// the rarer case where the device went away without the
+			// usb id changing (cable bump, suspend/resume, another
+			// process stealing the USB interface mid-session).
+			if existing := r.findOpenByBusDev(md.USBBus, md.USBDev); existing != nil {
+				if err := existing.Ping(); err == nil {
 					seen[existing.Identifier] = true
 					if _, dup := r.devices[existing.Identifier]; !dup {
 						r.devices[existing.Identifier] = newMTPController(existing, r.logger)
 					}
 					continue
+				} else {
+					r.logger.Info("MTP handle stale, reopening", "id", existing.Identifier, "err", err)
+					_ = existing.Close()
+					delete(r.openMTP, existing.Identifier)
 				}
-				r.logger.Info("MTP handle stale, reopening", "id", existing.Identifier)
-				_ = existing.Close()
-				delete(r.openMTP, existing.Identifier)
 			}
 			if err := r.mtpClient.Open(md); err != nil {
 				r.logger.Warn("mtp open failed", "id", usbID, "err", err)
@@ -205,22 +208,18 @@ func (r *Registry) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// findOpenByUSB looks for an already-open MTP device whose USB-level
-// fallback identifier matches usbID. Useful for matching the freshly-
-// enumerated "usb:bus-dev" string against handles we opened earlier
-// (which now carry the PTP serial as their Identifier).
-//
-// We use the raw bus_location / devnum from the cgo deviceImpl when
-// available; without exposing it here we fall back to a Friendly +
-// USB ID string compare. For now there's at most one DJI controller
-// in practice so a linear scan is fine.
-func (r *Registry) findOpenByUSB(_ string) *mtp.Device {
-	// Linear scan: any DJI device with a real PTP serial is a hit,
-	// because we filter to one vendor and the user typically has at
-	// most one controller plugged in. If we ever need to disambiguate
-	// multiple controllers, expose bus/dev on mtp.Device and match.
+// findOpenByBusDev looks for an already-open MTP device whose current
+// USB bus_location + devnum match. After unplug+replug the kernel
+// hands out a new devnum, so a mismatch is how we tell "this is a
+// fresh connection that needs its own Open" from "same controller as
+// last refresh, reuse the handle." The post-Open Identifier becomes
+// the PTP serial — stable across reconnects — which is why we can't
+// just compare Identifiers to detect a replug.
+func (r *Registry) findOpenByBusDev(bus, dev uint32) *mtp.Device {
 	for _, d := range r.openMTP {
-		return d
+		if d.USBBus == bus && d.USBDev == dev {
+			return d
+		}
 	}
 	return nil
 }
@@ -421,19 +420,6 @@ func (r *Registry) applySavedNames(deviceID string, slots []Slot) []Slot {
 		}
 	}
 	return slots
-}
-
-// mtpHandleAlive cheaply probes whether a previously-opened libmtp
-// handle is still usable. We list storages (root level) and check
-// that we got at least one back. When another process steals the USB
-// interface from libmtp mid-session, this call silently returns zero
-// storages with no error — that's our cue to reopen.
-func mtpHandleAlive(d *mtp.Device) bool {
-	storages, err := d.ListDir(nil)
-	if err != nil {
-		return false
-	}
-	return len(storages) > 0
 }
 
 // isDJI filters MTP devices down to DJI hardware by USB vendor ID.

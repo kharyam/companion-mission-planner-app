@@ -18,3 +18,4 @@ func listDir(*Device, *FileEntry) ([]FileEntry, error)                          
 func getFile(*Device, *FileEntry, io.Writer) error                                      { return ErrUnavailable }
 func putFile(*Device, *FileEntry, string, int64, io.Reader) (uint32, error)             { return 0, ErrUnavailable }
 func deleteObject(*Device, *FileEntry) error                                            { return ErrUnavailable }
+func pingDevice(*Device) error                                                          { return ErrUnavailable }

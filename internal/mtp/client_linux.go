@@ -19,6 +19,25 @@ package mtp
 // builds. The version-stable path is the linked-list form below.
 // We don't bind progress callbacks for now — every transfer fits well
 // under the libmtp default timeouts.
+
+// kam_mtp_probe forces a wire-level PTP exchange and reports whether
+// the device answered cleanly. We clear libmtp's error stack first,
+// call Get_Storage (which always issues GetStorageIDs over USB), then
+// inspect the stack: a non-NULL head means the underlying USB read
+// failed (e.g. ENODEV from libusb after an unplug). libmtp's cached
+// storage linked list survives a disconnect, so just *looking at*
+// d->storage isn't enough — the stack is what tells the truth.
+// Returns 1 if alive, 0 if dead. Always leaves the stack cleared so
+// later operations start fresh.
+static int kam_mtp_probe(LIBMTP_mtpdevice_t *dev) {
+    if (dev == NULL) return 0;
+    LIBMTP_Clear_Errorstack(dev);
+    LIBMTP_Get_Storage(dev, LIBMTP_STORAGE_SORTBY_NOTSORTED);
+    LIBMTP_error_t *err = LIBMTP_Get_Errorstack(dev);
+    int alive = (err == NULL) ? 1 : 0;
+    LIBMTP_Clear_Errorstack(dev);
+    return alive;
+}
 */
 import "C"
 
@@ -95,6 +114,8 @@ func listDevices() ([]*Device, error) {
 			Friendly:   "MTP device",
 			Vendor:     uint16(raw.device_entry.vendor_id),
 			Product:    uint16(raw.device_entry.product_id),
+			USBBus:     uint32(raw.bus_location),
+			USBDev:     uint32(raw.devnum),
 			impl:       deviceImpl{raw: *raw},
 		}
 		out = append(out, dev)
@@ -143,6 +164,21 @@ func closeDevice(d *Device) error {
 	if d.impl.dev != nil {
 		C.LIBMTP_Release_Device(d.impl.dev)
 		d.impl.dev = nil
+	}
+	return nil
+}
+
+// pingDevice runs the C-side probe and surfaces the result as a Go
+// error. Callers use this between Refreshes to validate a reused
+// handle. Note: against a freshly-unplugged device this will still
+// trigger libmtp/libusb's "No such device" stderr lines once — that's
+// libmtp itself, unrelated to our error reporting.
+func pingDevice(d *Device) error {
+	if d.impl.dev == nil {
+		return errors.New("mtp: device not open")
+	}
+	if int(C.kam_mtp_probe(d.impl.dev)) == 0 {
+		return errors.New("mtp: device not responding")
 	}
 	return nil
 }
