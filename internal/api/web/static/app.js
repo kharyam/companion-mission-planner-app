@@ -27,8 +27,67 @@ function toast(kind, title, detail) {
 
 // ---------- api helpers ----------
 
+// The server's auth middleware accepts the token via:
+//   - X-KAM-Token header (preferred for REST — keeps it out of URLs/logs)
+//   - Authorization: Bearer …
+//   - ?token=… query (used by the WebSocket since browsers can't set
+//     headers on the WS handshake)
+// We cache it in sessionStorage so the URL ?token=… is only needed
+// once per tab. The bootstrap captures it on load.
+const TOKEN_KEY = 'kamToken';
+
+function getToken() {
+  try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
+}
+
+function setToken(t) {
+  try {
+    if (t) sessionStorage.setItem(TOKEN_KEY, t);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  } catch {}
+}
+
+// captureTokenFromURL pulls ?token=… out of the current URL, stores it,
+// and strips it from the address bar so it doesn't sit in history or
+// get copied into a bookmark.
+function captureTokenFromURL() {
+  const url = new URL(location.href);
+  const t = url.searchParams.get('token');
+  if (t) {
+    setToken(t);
+    url.searchParams.delete('token');
+    history.replaceState(null, '', url.toString());
+  }
+}
+
+// withAuth returns a copy of opts with X-KAM-Token merged into headers.
+// Use for every fetch the UI makes — both api() and the direct fetch
+// calls for FormData uploads (which don't go through api()).
+function withAuth(opts = {}) {
+  const t = getToken();
+  if (!t) return opts;
+  const headers = new Headers(opts.headers || {});
+  headers.set('X-KAM-Token', t);
+  return { ...opts, headers };
+}
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, opts);
+  const res = await fetch(path, withAuth(opts));
+  if (res.status === 401) {
+    // Token is missing or wrong — drop the stale value and reprompt.
+    setToken('');
+    await promptForToken('Session token rejected (401). Paste a valid token to continue.');
+    // After the user supplies one, retry once.
+    const retry = await fetch(path, withAuth(opts));
+    const retryText = await retry.text();
+    let retryBody;
+    try { retryBody = retryText ? JSON.parse(retryText) : null; } catch { retryBody = { _raw: retryText }; }
+    if (!retry.ok) {
+      const err = retryBody?.error || { code: 'HTTP_' + retry.status, message: retryText || retry.statusText };
+      throw err;
+    }
+    return retryBody;
+  }
   const text = await res.text();
   let body;
   try { body = text ? JSON.parse(text) : null; } catch { body = { _raw: text }; }
@@ -37,6 +96,43 @@ async function api(path, opts = {}) {
     throw err;
   }
   return body;
+}
+
+// promptForToken shows a modal asking the user to paste a token. It
+// resolves once a non-empty value has been stored. Rejection of the
+// modal (Escape / backdrop click) is intentionally not offered —
+// without a token the UI can't do anything, so there's no useful
+// "cancel" state.
+function promptForToken(message) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true">
+        <h3 class="modal-title">Authentication required</h3>
+        <p class="modal-subtitle"></p>
+        <input type="password" class="token-input" autocomplete="off" spellcheck="false"
+               style="width:100%;padding:8px;margin-top:8px;font-family:monospace">
+        <div class="modal-actions" style="margin-top:12px">
+          <button type="button" class="primary save">Save</button>
+        </div>
+      </div>
+    `;
+    backdrop.querySelector('.modal-subtitle').textContent = message
+      || 'Paste the auth token configured in the server’s config.yaml (auth.token).';
+    document.body.appendChild(backdrop);
+    const input = backdrop.querySelector('.token-input');
+    const save = () => {
+      const v = input.value.trim();
+      if (!v) return;
+      setToken(v);
+      backdrop.remove();
+      resolve(v);
+    };
+    backdrop.querySelector('.save').addEventListener('click', save);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+    input.focus();
+  });
 }
 
 function bytesHuman(n) {
@@ -608,7 +704,7 @@ async function autoInspect(file) {
   const fd = new FormData();
   fd.append('kmz', file);
   try {
-    const res = await fetch('/api/kmz/inspect', { method: 'POST', body: fd });
+    const res = await fetch('/api/kmz/inspect', withAuth({ method: 'POST', body: fd }));
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       toast('warn', 'KMZ inspect failed', body?.error?.message || res.statusText);
@@ -713,7 +809,7 @@ async function submitTransfer(e) {
 
   const startedAt = performance.now();
   try {
-    const res = await fetch(url, { method: 'POST', body: fd });
+    const res = await fetch(url, withAuth({ method: 'POST', body: fd }));
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       const err = body.error || { message: res.statusText };
@@ -817,7 +913,12 @@ function wireDropzone() {
 
 function wireEvents() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${proto}//${location.host}/api/events`);
+  // Browsers can't set custom headers on a WebSocket handshake, so the
+  // server accepts the token via query string here (auth middleware in
+  // server.go falls back to ?token=…).
+  const t = getToken();
+  const qs = t ? `?token=${encodeURIComponent(t)}` : '';
+  const ws = new WebSocket(`${proto}//${location.host}/api/events${qs}`);
   ws.addEventListener('message', (m) => {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
@@ -840,6 +941,22 @@ function escapeHTML(s) {
 // ---------- bootstrap ----------
 
 window.addEventListener('DOMContentLoaded', async () => {
+  // Token first — every other call depends on it.
+  captureTokenFromURL();
+  if (!getToken()) {
+    // Server may be running without auth (empty token disables it).
+    // Try one unauthenticated call to find out; if it succeeds we
+    // never prompt. If it fails with 401 we prompt and retry.
+    try {
+      const probe = await fetch('/api/health');
+      if (probe.status === 401) {
+        await promptForToken();
+      }
+    } catch {
+      // Network error — let the regular pollHealth surface it.
+    }
+  }
+
   wireDropzone();
   $('transfer-form').addEventListener('submit', submitTransfer);
   $('refresh-devices').addEventListener('click', loadDevices);
