@@ -50,6 +50,15 @@ type Device struct {
 	Vendor  uint16
 	Product uint16
 
+	// USBBus / USBDev are the bus_location and devnum reported by libmtp
+	// at enumeration time. They identify the *current* USB address, so a
+	// replug (which renumbers the device) produces a different pair —
+	// that's how the detector tells "same hardware as before" from "this
+	// is a fresh connection that needs its own Open call." Stable for
+	// the lifetime of a single connection.
+	USBBus uint32
+	USBDev uint32
+
 	// mu serializes every method that touches libmtp through this
 	// handle. libmtp is not thread-safe — concurrent calls into the
 	// same device pointer can SIGSEGV inside the C library (we caught
@@ -142,4 +151,17 @@ func (d *Device) Delete(entry *FileEntry) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return deleteObject(d, entry)
+}
+
+// Ping issues a wire-touching PTP request and reports whether the
+// device is still responding. Used by the detector to validate a
+// previously-opened handle before reusing it across a Refresh — libmtp
+// caches storage / device-info on Open and keeps that cache in memory
+// after the underlying USB device disappears, so a structural check
+// like "do we have any cached storages?" lies about dead handles.
+// Returns nil iff the device is still on the bus and answered.
+func (d *Device) Ping() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return pingDevice(d)
 }
