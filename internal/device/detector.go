@@ -48,6 +48,15 @@ type Registry struct {
 	// them on Refresh + shutdown. Keyed by Device.Identifier.
 	openMTP map[string]*mtp.Device
 
+	// mtpControllers caches per-device mtpController instances across
+	// Refreshes. Each Refresh wipes r.devices and rebuilds it, but the
+	// controllers hold expensive caches (waypointDir + previewDir
+	// FileEntries that take a multi-second PTP path walk to populate)
+	// that we want to preserve while the underlying *mtp.Device handle
+	// is still valid. Keyed by Device.Identifier; entries are dropped
+	// when openMTP drops the matching handle.
+	mtpControllers map[string]*mtpController
+
 	// previewEnabled gates ESRI fetches. Set from cfg.Map.Provider.
 	previewEnabled bool
 
@@ -62,6 +71,12 @@ type Registry struct {
 	// managed records the per-slot user opt-out (default true; only
 	// false when the user has explicitly unchecked "managed").
 	managed *managed.Store
+
+	// eventBus carries internally-produced events (e.g. an MTP
+	// controller's background locateWaypointDir finishing) to whoever
+	// is currently consuming Watch's channel. Buffered so producers
+	// never block; drops on overflow with a debug log.
+	eventBus chan Event
 }
 
 // NewRegistry creates a registry. It does not start polling; the API
@@ -86,6 +101,8 @@ func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 		devices:        map[string]Controller{},
 		mtpClient:      mtp.New(),
 		openMTP:        map[string]*mtp.Device{},
+		mtpControllers: map[string]*mtpController{},
+		eventBus:       make(chan Event, 64),
 		previewEnabled: previewEnabled,
 		names:          store,
 		order:          orderStore,
@@ -109,8 +126,12 @@ func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 // running DJI Fly with USB debugging on), ADB wins — it's faster and
 // has richer file ops.
 func (r *Registry) Refresh(ctx context.Context) error {
+	start := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer func() {
+		r.logger.Info("registry refresh", "elapsed", time.Since(start))
+	}()
 	r.devices = map[string]Controller{}
 
 	// ADB — best effort. The MTP path on DJI RC 2 kills adb-server to
@@ -159,42 +180,77 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			// usb id changing (cable bump, suspend/resume, another
 			// process stealing the USB interface mid-session).
 			if existing := r.findOpenByBusDev(md.USBBus, md.USBDev); existing != nil {
+				// If the controller's background locateWaypointDir walk
+				// is in flight, skip Ping. Ping locks d.mu, and
+				// mtp.LookupPath holds d.mu for the entire ~10s path
+				// traversal — so Pinging here would serialize every
+				// /api/devices call behind the walk, even though the
+				// walk's own USB traffic already proves the handle is
+				// alive. This is the dominant source of cascading
+				// 10s+ Refresh latencies after a replug.
+				if c, ok := r.mtpControllers[existing.Identifier]; ok && c.isLocating() {
+					seen[existing.Identifier] = true
+					r.devices[existing.Identifier] = c
+					continue
+				}
 				if err := existing.Ping(); err == nil {
 					seen[existing.Identifier] = true
-					if _, dup := r.devices[existing.Identifier]; !dup {
-						r.devices[existing.Identifier] = newMTPController(existing, r.logger)
-					}
+					r.devices[existing.Identifier] = r.controllerFor(existing)
 					continue
 				} else {
 					r.logger.Info("MTP handle stale, reopening", "id", existing.Identifier, "err", err)
 					_ = existing.Close()
 					delete(r.openMTP, existing.Identifier)
+					delete(r.mtpControllers, existing.Identifier)
 				}
 			}
+			openStart := time.Now()
 			if err := r.mtpClient.Open(md); err != nil {
-				r.logger.Warn("mtp open failed", "id", usbID, "err", err)
+				r.logger.Warn("mtp open failed", "id", usbID, "elapsed", time.Since(openStart), "err", err)
 				continue
 			}
+			r.logger.Info("mtp open", "id", md.Identifier, "elapsed", time.Since(openStart))
 			seen[md.Identifier] = true
 			r.openMTP[md.Identifier] = md
-			r.devices[md.Identifier] = newMTPController(md, r.logger)
+			r.devices[md.Identifier] = r.controllerFor(md)
 		}
 		// Close stale handles (device unplugged or claimed by ADB now).
+		// LIBMTP_Release_Device sends a PTP CloseSession before tearing
+		// down the libusb claim, and on a dead device that hits the
+		// libusb per-endpoint timeout — up to ~10s per handle. We don't
+		// want the API response (the user's UI badge update) to wait on
+		// that, so we hand off Close to a goroutine after removing the
+		// entry from openMTP. The Device struct has no other references
+		// at this point — r.devices was rebuilt above and openMTP no
+		// longer holds it — so the goroutine has exclusive ownership.
 		for id, open := range r.openMTP {
 			if !seen[id] {
-				r.logger.Debug("closing stale MTP handle", "id", id)
-				_ = open.Close()
 				delete(r.openMTP, id)
+				delete(r.mtpControllers, id)
+				go func(d *mtp.Device, deviceID string) {
+					closeStart := time.Now()
+					_ = d.Close()
+					r.logger.Info("stale mtp handle closed", "id", deviceID, "elapsed", time.Since(closeStart))
+				}(open, id)
 			}
 		}
 
 		// Dedup: if we have a working MTP device, drop any ADB
 		// entries that are offline DJI devices — they're the same
 		// physical hardware and ADB won't ever authorize them.
+		//
+		// Only consider ADB entries here. Calling Info() on the MTP
+		// controller would trigger locateWaypointDir's multi-second
+		// PTP path walk for no benefit — MTP devices are never
+		// candidates for the dedup-by-shadow check.
 		if len(r.openMTP) > 0 {
 			for id, c := range r.devices {
-				info := c.Info()
-				if info.ConnectionType == ConnADB && !info.Authorized {
+				adbDev, ok := c.(*adbController)
+				if !ok {
+					continue
+				}
+				info := adbDev.Info()
+				if !info.Authorized {
 					// Heuristic: ADB serials for DJI controllers are
 					// short alphanumeric (e.g. 6UZTN78001TD1T). If
 					// this entry is offline and we have a live MTP DJI
@@ -206,6 +262,46 @@ func (r *Registry) Refresh(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// controllerFor returns the cached mtpController for d, creating one
+// on first use. The cache is what lets locateWaypointDir's expensive
+// PTP path walk run at most once per connection — without it, every
+// Refresh creates a fresh controller with a nil waypointDir cache and
+// the walk repeats. Caller must hold r.mu.
+//
+// On first creation we also kick off the walk in a background goroutine
+// (kickoffLocate is idempotent). The onLocated callback emits a
+// device.refreshed event when the walk finishes so the UI's WebSocket
+// handler re-fetches /api/devices and the DJIFlyDetected indicator
+// flips from false to its true value without the user waiting on the
+// initial /api/devices call.
+func (r *Registry) controllerFor(d *mtp.Device) *mtpController {
+	if c, ok := r.mtpControllers[d.Identifier]; ok {
+		return c
+	}
+	deviceID := d.Identifier
+	c := newMTPController(d, r.logger, func() {
+		r.emit(Event{Type: "device.refreshed", DeviceID: deviceID})
+	})
+	r.mtpControllers[deviceID] = c
+	c.kickoffLocate()
+	return c
+}
+
+// emit pushes an event onto the internal bus that Watch drains into
+// its output channel. Non-blocking — drops on overflow rather than
+// blocking the caller (typically a goroutine completing a background
+// walk; we'd rather lose a refresh event than wedge the walk).
+func (r *Registry) emit(ev Event) {
+	if ev.At.IsZero() {
+		ev.At = time.Now()
+	}
+	select {
+	case r.eventBus <- ev:
+	default:
+		r.logger.Debug("eventBus full, dropping event", "type", ev.Type, "deviceId", ev.DeviceID)
+	}
 }
 
 // findOpenByBusDev looks for an already-open MTP device whose current
@@ -505,6 +601,23 @@ func (r *Registry) Watch(ctx context.Context) <-chan Event {
 			r.pollMTPHotplug(ctx, out)
 		})
 	}
+	// Drain the internal event bus into the same output channel. This
+	// is how goroutines that don't have a direct handle on `out` (e.g.
+	// the locateWaypointDir background walker) publish events.
+	wg.Go(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev := <-r.eventBus:
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	})
 
 	go func() {
 		wg.Wait()
