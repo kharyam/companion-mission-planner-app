@@ -98,39 +98,39 @@ async function api(path, opts = {}) {
   return body;
 }
 
-// promptForToken shows a modal asking the user to paste a token. It
-// resolves once a non-empty value has been stored. Rejection of the
-// modal (Escape / backdrop click) is intentionally not offered —
-// without a token the UI can't do anything, so there's no useful
-// "cancel" state.
+// promptForToken shows a modal asking the user to paste a token.
+// Empty submission is allowed — if the server has auth disabled the
+// middleware ignores the token, and if it's enabled api()'s own 401
+// handler will re-prompt. Backdrop click / Escape are not offered
+// because the surrounding UI is non-functional without an answer.
 function promptForToken(message) {
   return new Promise((resolve) => {
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
     backdrop.innerHTML = `
       <div class="modal" role="dialog" aria-modal="true">
-        <h3 class="modal-title">Authentication required</h3>
+        <h3 class="modal-title">Authentication token</h3>
         <p class="modal-subtitle"></p>
         <input type="password" class="token-input" autocomplete="off" spellcheck="false"
                style="width:100%;padding:8px;margin-top:8px;font-family:monospace">
-        <div class="modal-actions" style="margin-top:12px">
+        <div class="modal-actions" style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+          <button type="button" class="ghost skip">No auth</button>
           <button type="button" class="primary save">Save</button>
         </div>
       </div>
     `;
     backdrop.querySelector('.modal-subtitle').textContent = message
-      || 'Paste the auth token configured in the server’s config.yaml (auth.token).';
+      || 'Paste the auth token configured in the server’s config.yaml (auth.token). If your server runs without auth, choose "No auth".';
     document.body.appendChild(backdrop);
     const input = backdrop.querySelector('.token-input');
-    const save = () => {
-      const v = input.value.trim();
-      if (!v) return;
-      setToken(v);
+    const finish = (v) => {
+      setToken(v || '');
       backdrop.remove();
-      resolve(v);
+      resolve(v || '');
     };
-    backdrop.querySelector('.save').addEventListener('click', save);
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+    backdrop.querySelector('.save').addEventListener('click', () => finish(input.value.trim()));
+    backdrop.querySelector('.skip').addEventListener('click', () => finish(''));
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') finish(input.value.trim()); });
     input.focus();
   });
 }
@@ -942,19 +942,15 @@ function escapeHTML(s) {
 
 window.addEventListener('DOMContentLoaded', async () => {
   // Token first — every other call depends on it.
+  // 1. ?token=… in the URL wins (single-shot bootstrap).
+  // 2. Otherwise reuse whatever's in sessionStorage from earlier in
+  //    this tab.
+  // 3. Otherwise prompt. The modal accepts an empty submission for
+  //    servers running with auth disabled (config.auth.token == ""),
+  //    in which case the middleware ignores the header anyway.
   captureTokenFromURL();
   if (!getToken()) {
-    // Server may be running without auth (empty token disables it).
-    // Try one unauthenticated call to find out; if it succeeds we
-    // never prompt. If it fails with 401 we prompt and retry.
-    try {
-      const probe = await fetch('/api/health');
-      if (probe.status === 401) {
-        await promptForToken();
-      }
-    } catch {
-      // Network error — let the regular pollHealth surface it.
-    }
+    await promptForToken();
   }
 
   wireDropzone();
