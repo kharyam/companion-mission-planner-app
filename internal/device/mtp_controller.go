@@ -59,19 +59,45 @@ func (c *mtpController) Info() Info {
 	if model == "" {
 		model = "Unknown DJI device"
 	}
-	c.locateMu.Lock()
-	found := c.waypointDir != nil
-	c.locateMu.Unlock()
 	return Info{
 		ID:             c.dev.Identifier,
 		Model:          model,
 		ConnectionType: ConnMTP,
 		// MTP doesn't have an auth dance: if the device shows up,
-		// it's already accessible. DJIFlyDetected mirrors whether
-		// the waypoint folder is reachable.
+		// it's already accessible. For DJI MTP controllers, the
+		// presence of a working *mtp.Device means the device is a
+		// DJI controller and DJI Fly is the only thing on it —
+		// so DJIFlyDetected is effectively redundant with "we got
+		// here." Reporting it as true unconditionally lets the
+		// planner UI flip its status indicator green at Open time
+		// (~30ms) instead of waiting for locateWaypointDir's
+		// multi-second PTP path walk to finish. If the waypoint
+		// subfolder is genuinely missing (user has never used the
+		// waypoint feature), ListSlots surfaces that with a clear
+		// error — but the badge no longer lies stale for 10+s.
 		Authorized:     true,
 		State:          "online",
-		DJIFlyDetected: found,
+		DJIFlyDetected: true,
+	}
+}
+
+// isLocating reports whether the background locateWaypointDir walk
+// is currently running. Used by Refresh to skip the Ping liveness
+// check while the walk is holding d.mu — the walk's own USB traffic
+// is sufficient proof the handle is alive, and Ping would otherwise
+// serialize behind the walk's LookupPath (which holds d.mu for the
+// entire multi-second path traversal).
+func (c *mtpController) isLocating() bool {
+	c.locateMu.Lock()
+	defer c.locateMu.Unlock()
+	if !c.locateStarted || c.locateDone == nil {
+		return false
+	}
+	select {
+	case <-c.locateDone:
+		return false
+	default:
+		return true
 	}
 }
 

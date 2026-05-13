@@ -180,6 +180,19 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			// usb id changing (cable bump, suspend/resume, another
 			// process stealing the USB interface mid-session).
 			if existing := r.findOpenByBusDev(md.USBBus, md.USBDev); existing != nil {
+				// If the controller's background locateWaypointDir walk
+				// is in flight, skip Ping. Ping locks d.mu, and
+				// mtp.LookupPath holds d.mu for the entire ~10s path
+				// traversal — so Pinging here would serialize every
+				// /api/devices call behind the walk, even though the
+				// walk's own USB traffic already proves the handle is
+				// alive. This is the dominant source of cascading
+				// 10s+ Refresh latencies after a replug.
+				if c, ok := r.mtpControllers[existing.Identifier]; ok && c.isLocating() {
+					seen[existing.Identifier] = true
+					r.devices[existing.Identifier] = c
+					continue
+				}
 				if err := existing.Ping(); err == nil {
 					seen[existing.Identifier] = true
 					r.devices[existing.Identifier] = r.controllerFor(existing)
