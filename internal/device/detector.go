@@ -462,30 +462,119 @@ type Event struct {
 }
 
 // Watch streams device-state events until ctx is cancelled. Safe to
-// call before any device is connected; if adb is unavailable the
-// channel is closed immediately.
+// call before any device is connected.
+//
+// Two sources feed the channel:
+//   - The ADB watcher (adb-server's own hotplug notifications), which is
+//     instantaneous but only sees ADB-visible devices.
+//   - An MTP hotplug poller, because MTP-only devices like the DJI RC 2
+//     never surface through ADB and libmtp has no native hotplug API.
+//
+// The MTP poller does a periodic libusb-level scan (the same one
+// `LIBMTP_Detect_Raw_Devices` performs at startup), diffs the result
+// against the previous tick, and emits synthetic device.connected /
+// device.disconnected events. Without it the UI's WebSocket sees no
+// signal when an RC 2 is unplugged and the badge stays green until
+// the user does a manual refresh.
 func (r *Registry) Watch(ctx context.Context) <-chan Event {
 	out := make(chan Event, 16)
-	if r.adbClient == nil {
-		close(out)
-		return out
-	}
-	go func() {
-		defer close(out)
-		src := r.adbClient.Watch()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case ev, ok := <-src:
-				if !ok {
+
+	var wg sync.WaitGroup
+	if r.adbClient != nil {
+		wg.Go(func() {
+			src := r.adbClient.Watch()
+			for {
+				select {
+				case <-ctx.Done():
 					return
+				case ev, ok := <-src:
+					if !ok {
+						return
+					}
+					select {
+					case out <- translateStateChange(ev):
+					case <-ctx.Done():
+						return
+					}
 				}
-				out <- translateStateChange(ev)
 			}
-		}
+		})
+	}
+	if r.mtpClient != nil {
+		wg.Go(func() {
+			r.pollMTPHotplug(ctx, out)
+		})
+	}
+
+	go func() {
+		wg.Wait()
+		close(out)
 	}()
 	return out
+}
+
+// mtpHotplugInterval is how often we re-scan the USB bus for MTP
+// devices. Short enough to feel snappy in the UI, long enough that
+// libusb doesn't dominate any CPU profile. The scan is the same one
+// LIBMTP_Detect_Raw_Devices runs and doesn't touch open PTP sessions.
+const mtpHotplugInterval = 2 * time.Second
+
+// pollMTPHotplug ticks at mtpHotplugInterval and emits synthetic
+// connect/disconnect events whenever the set of DJI MTP devices on
+// the bus changes. The diff key is the pre-Open Identifier
+// ("usb:<bus>-<dev>"), which is what mtp.Client.List() returns before
+// Open replaces it with the PTP serial — stable for a single
+// connection, distinct across replugs (the kernel hands out a new
+// devnum each time). The PTP serial in r.devices isn't usable here
+// because we may not have Opened the device yet on the first tick.
+func (r *Registry) pollMTPHotplug(ctx context.Context, out chan<- Event) {
+	ticker := time.NewTicker(mtpHotplugInterval)
+	defer ticker.Stop()
+
+	prev := map[string]struct{}{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		devs, err := r.mtpClient.List()
+		if err != nil {
+			// Don't reset prev — a transient libusb hiccup shouldn't
+			// fabricate a wave of disconnect events.
+			r.logger.Debug("mtp hotplug list failed", "err", err)
+			continue
+		}
+		curr := make(map[string]struct{}, len(devs))
+		for _, d := range devs {
+			if !isDJI(d) {
+				continue
+			}
+			curr[d.Identifier] = struct{}{}
+		}
+
+		now := time.Now()
+		for id := range prev {
+			if _, still := curr[id]; !still {
+				select {
+				case out <- Event{Type: "device.disconnected", DeviceID: id, At: now}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		for id := range curr {
+			if _, was := prev[id]; !was {
+				select {
+				case out <- Event{Type: "device.connected", DeviceID: id, At: now}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		prev = curr
+	}
 }
 
 func translateStateChange(ev adb.StateChange) Event {
