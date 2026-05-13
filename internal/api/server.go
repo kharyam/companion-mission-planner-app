@@ -180,7 +180,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Accept either Authorization: Bearer <token> or X-KAM-Token: <token>.
+		// Accept the token via X-KAM-Token, Authorization: Bearer, or a
+		// ?token=<value> query param. The query-param path exists because
+		// browsers can't attach custom headers to the WebSocket upgrade
+		// handshake, so the planner's WS client passes the token in the
+		// URL — without it the /api/events stream gets 401'd whenever
+		// auth is configured.
 		got := r.Header.Get("X-KAM-Token")
 		if got == "" {
 			h := r.Header.Get("Authorization")
@@ -188,6 +193,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			if len(h) > len(p) && h[:len(p)] == p {
 				got = h[len(p):]
 			}
+		}
+		if got == "" {
+			got = r.URL.Query().Get("token")
 		}
 		if got != token {
 			writeError(w, http.StatusUnauthorized, CodeUnauthorized, "missing or invalid auth token", nil)
