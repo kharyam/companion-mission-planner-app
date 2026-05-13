@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -186,6 +187,20 @@ func (s *Server) handleUIIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	token := s.cfg.Auth.Token
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Admin UI shell + static assets are public by design. They
+		// contain no secrets, and gating them defeats the very flow
+		// they exist to bootstrap: the browser loads /ui, runs
+		// app.js, and app.js then captures or prompts for the token
+		// it needs to talk to the API. Browsers don't propagate the
+		// `?token=` query from /ui?token=… down to subresource
+		// requests like /ui/static/app.js, so requiring auth here
+		// would 401 the very script that's supposed to handle auth.
+		// Anything under /api/* (and the websocket) still requires
+		// the token below.
+		if r.URL.Path == "/ui" || r.URL.Path == "/ui/" || strings.HasPrefix(r.URL.Path, "/ui/static/") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if token == "" {
 			next.ServeHTTP(w, r)
 			return
