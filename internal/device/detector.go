@@ -48,6 +48,15 @@ type Registry struct {
 	// them on Refresh + shutdown. Keyed by Device.Identifier.
 	openMTP map[string]*mtp.Device
 
+	// mtpControllers caches per-device mtpController instances across
+	// Refreshes. Each Refresh wipes r.devices and rebuilds it, but the
+	// controllers hold expensive caches (waypointDir + previewDir
+	// FileEntries that take a multi-second PTP path walk to populate)
+	// that we want to preserve while the underlying *mtp.Device handle
+	// is still valid. Keyed by Device.Identifier; entries are dropped
+	// when openMTP drops the matching handle.
+	mtpControllers map[string]*mtpController
+
 	// previewEnabled gates ESRI fetches. Set from cfg.Map.Provider.
 	previewEnabled bool
 
@@ -86,6 +95,7 @@ func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 		devices:        map[string]Controller{},
 		mtpClient:      mtp.New(),
 		openMTP:        map[string]*mtp.Device{},
+		mtpControllers: map[string]*mtpController{},
 		previewEnabled: previewEnabled,
 		names:          store,
 		order:          orderStore,
@@ -165,14 +175,13 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			if existing := r.findOpenByBusDev(md.USBBus, md.USBDev); existing != nil {
 				if err := existing.Ping(); err == nil {
 					seen[existing.Identifier] = true
-					if _, dup := r.devices[existing.Identifier]; !dup {
-						r.devices[existing.Identifier] = newMTPController(existing, r.logger)
-					}
+					r.devices[existing.Identifier] = r.controllerFor(existing)
 					continue
 				} else {
 					r.logger.Info("MTP handle stale, reopening", "id", existing.Identifier, "err", err)
 					_ = existing.Close()
 					delete(r.openMTP, existing.Identifier)
+					delete(r.mtpControllers, existing.Identifier)
 				}
 			}
 			openStart := time.Now()
@@ -183,7 +192,7 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			r.logger.Info("mtp open", "id", md.Identifier, "elapsed", time.Since(openStart))
 			seen[md.Identifier] = true
 			r.openMTP[md.Identifier] = md
-			r.devices[md.Identifier] = newMTPController(md, r.logger)
+			r.devices[md.Identifier] = r.controllerFor(md)
 		}
 		// Close stale handles (device unplugged or claimed by ADB now).
 		// LIBMTP_Release_Device sends a PTP CloseSession before tearing
@@ -197,6 +206,7 @@ func (r *Registry) Refresh(ctx context.Context) error {
 		for id, open := range r.openMTP {
 			if !seen[id] {
 				delete(r.openMTP, id)
+				delete(r.mtpControllers, id)
 				go func(d *mtp.Device, deviceID string) {
 					closeStart := time.Now()
 					_ = d.Close()
@@ -208,10 +218,19 @@ func (r *Registry) Refresh(ctx context.Context) error {
 		// Dedup: if we have a working MTP device, drop any ADB
 		// entries that are offline DJI devices — they're the same
 		// physical hardware and ADB won't ever authorize them.
+		//
+		// Only consider ADB entries here. Calling Info() on the MTP
+		// controller would trigger locateWaypointDir's multi-second
+		// PTP path walk for no benefit — MTP devices are never
+		// candidates for the dedup-by-shadow check.
 		if len(r.openMTP) > 0 {
 			for id, c := range r.devices {
-				info := c.Info()
-				if info.ConnectionType == ConnADB && !info.Authorized {
+				adbDev, ok := c.(*adbController)
+				if !ok {
+					continue
+				}
+				info := adbDev.Info()
+				if !info.Authorized {
 					// Heuristic: ADB serials for DJI controllers are
 					// short alphanumeric (e.g. 6UZTN78001TD1T). If
 					// this entry is offline and we have a live MTP DJI
@@ -223,6 +242,20 @@ func (r *Registry) Refresh(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// controllerFor returns the cached mtpController for d, creating one
+// on first use. The cache is what lets locateWaypointDir's expensive
+// PTP path walk run at most once per connection — without it, every
+// Refresh creates a fresh controller with a nil waypointDir cache and
+// the walk repeats. Caller must hold r.mu.
+func (r *Registry) controllerFor(d *mtp.Device) *mtpController {
+	if c, ok := r.mtpControllers[d.Identifier]; ok {
+		return c
+	}
+	c := newMTPController(d, r.logger)
+	r.mtpControllers[d.Identifier] = c
+	return c
 }
 
 // findOpenByBusDev looks for an already-open MTP device whose current

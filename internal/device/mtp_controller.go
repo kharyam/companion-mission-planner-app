@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -67,6 +68,7 @@ func (c *mtpController) locateWaypointDir() error {
 	if c.waypointDir != nil {
 		return nil
 	}
+	start := time.Now()
 	storages, err := c.dev.ListDir(nil)
 	if err != nil {
 		return fmt.Errorf("list storages: %w", err)
@@ -75,10 +77,19 @@ func (c *mtpController) locateWaypointDir() error {
 	for _, s := range storages {
 		c.logger.Debug("mtp storage", "name", s.Name, "id", s.StorageID)
 	}
+	// DJI Fly always lives under the device's main user-visible storage.
+	// On the RC 2 that's "Internal shared storage"; secondary entries
+	// like "disk" never carry the Android tree but cost a full
+	// 6-segment PTP path walk to fall through, so try the most likely
+	// candidate first.
+	ordered := append([]mtp.FileEntry(nil), storages...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return storagePriority(ordered[i].Name) > storagePriority(ordered[j].Name)
+	})
 	const relative = "Android/data/dji.go.v5/files/waypoint"
 	var attempted []string
-	for i := range storages {
-		full := storages[i].Name + "/" + relative
+	for i := range ordered {
+		full := ordered[i].Name + "/" + relative
 		attempted = append(attempted, full)
 		entry, err := c.dev.LookupPath(full)
 		if err != nil {
@@ -93,11 +104,28 @@ func (c *mtpController) locateWaypointDir() error {
 		if p, err := c.dev.LookupPath(previewPath); err == nil {
 			c.previewDir = p
 		}
-		c.logger.Info("located DJI Fly waypoint folder", "path", full, "object_id", entry.ObjectID)
+		c.logger.Info("located DJI Fly waypoint folder", "path", full, "object_id", entry.ObjectID, "elapsed", time.Since(start))
 		return nil
 	}
-	c.logger.Warn("DJI Fly waypoint folder not found", "tried", attempted)
+	c.logger.Warn("DJI Fly waypoint folder not found", "tried", attempted, "elapsed", time.Since(start))
 	return fmt.Errorf("DJI Fly waypoint folder not found on any storage: %w", mtp.ErrNotFound)
+}
+
+// storagePriority ranks MTP storage names so the most likely place to
+// find the DJI Fly Android tree is tried first. Higher returns sort
+// earlier in locateWaypointDir's iteration.
+func storagePriority(name string) int {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.Contains(lower, "internal") && strings.Contains(lower, "shared"):
+		return 3
+	case strings.Contains(lower, "internal"):
+		return 2
+	case strings.Contains(lower, "disk"):
+		return 0
+	default:
+		return 1
+	}
 }
 
 func (c *mtpController) ListSlots() ([]Slot, error) {
