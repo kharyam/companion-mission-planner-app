@@ -18,6 +18,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -138,18 +139,29 @@ func Generate(ctx context.Context, meta *Metadata, opts Options) ([]byte, error)
 	opts = opts.withDefaults()
 	dc := gg.NewContext(opts.Width, opts.Height)
 
-	if len(meta.Waypoints) >= 2 {
+	// Any waypoint count >= 1 gets a real satellite render. The bbox
+	// padding handles the degenerate single-point case (dLat / dLng
+	// reset to 0.0005° when zero, giving a ~50m radius around the
+	// point at the equator), and chooseZoom picks the deepest zoom
+	// that still fits. Without this floor of 1, callers that send a
+	// single anchor point (e.g. mission-planner falling back to a
+	// subject centroid when there are no manual waypoints) get the
+	// dark drawSolid backdrop and a black-with-logo preview.
+	if len(meta.Waypoints) >= 1 {
 		proj, err := drawMap(ctx, dc, meta, opts)
 		if err != nil {
-			// fall back to solid backdrop on tile error
+			slog.WarnContext(ctx, "preview: ESRI tile fetch failed, rendering dark fallback (DJI Fly will show a near-black preview with just the KAM logo)",
+				"err", err,
+				"waypoints", len(meta.Waypoints),
+				"hint", "verify the companion host can reach https://server.arcgisonline.com (curl that URL from the server; check HTTP_PROXY / DNS / outbound firewall)")
 			drawSolid(dc)
 			overlayWaypointsFallback(dc, meta)
 		} else {
 			overlayWaypoints(dc, meta, proj)
 		}
 	} else {
+		slog.DebugContext(ctx, "preview: 0 waypoints, rendering solid backdrop only")
 		drawSolid(dc)
-		overlayWaypointsFallback(dc, meta)
 	}
 
 	overlayText(dc, meta)
@@ -622,14 +634,17 @@ func fetchTile(ctx context.Context, client *http.Client, z, x, y int) (image.Ima
 	req.Header.Set("User-Agent", "kam-transfer/0.1 (+https://github.com/kamdynamics)")
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("GET %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("tile %d/%d/%d: HTTP %d", z, x, y, resp.StatusCode)
+		return nil, fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)
 	}
 	img, _, err := image.Decode(resp.Body)
-	return img, err
+	if err != nil {
+		return nil, fmt.Errorf("decode %s: %w", url, err)
+	}
+	return img, nil
 }
 
