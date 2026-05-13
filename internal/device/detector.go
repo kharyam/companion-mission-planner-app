@@ -109,8 +109,12 @@ func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 // running DJI Fly with USB debugging on), ADB wins — it's faster and
 // has richer file ops.
 func (r *Registry) Refresh(ctx context.Context) error {
+	start := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer func() {
+		r.logger.Info("registry refresh", "elapsed", time.Since(start))
+	}()
 	r.devices = map[string]Controller{}
 
 	// ADB — best effort. The MTP path on DJI RC 2 kills adb-server to
@@ -171,20 +175,33 @@ func (r *Registry) Refresh(ctx context.Context) error {
 					delete(r.openMTP, existing.Identifier)
 				}
 			}
+			openStart := time.Now()
 			if err := r.mtpClient.Open(md); err != nil {
-				r.logger.Warn("mtp open failed", "id", usbID, "err", err)
+				r.logger.Warn("mtp open failed", "id", usbID, "elapsed", time.Since(openStart), "err", err)
 				continue
 			}
+			r.logger.Info("mtp open", "id", md.Identifier, "elapsed", time.Since(openStart))
 			seen[md.Identifier] = true
 			r.openMTP[md.Identifier] = md
 			r.devices[md.Identifier] = newMTPController(md, r.logger)
 		}
 		// Close stale handles (device unplugged or claimed by ADB now).
+		// LIBMTP_Release_Device sends a PTP CloseSession before tearing
+		// down the libusb claim, and on a dead device that hits the
+		// libusb per-endpoint timeout — up to ~10s per handle. We don't
+		// want the API response (the user's UI badge update) to wait on
+		// that, so we hand off Close to a goroutine after removing the
+		// entry from openMTP. The Device struct has no other references
+		// at this point — r.devices was rebuilt above and openMTP no
+		// longer holds it — so the goroutine has exclusive ownership.
 		for id, open := range r.openMTP {
 			if !seen[id] {
-				r.logger.Debug("closing stale MTP handle", "id", id)
-				_ = open.Close()
 				delete(r.openMTP, id)
+				go func(d *mtp.Device, deviceID string) {
+					closeStart := time.Now()
+					_ = d.Close()
+					r.logger.Info("stale mtp handle closed", "id", deviceID, "elapsed", time.Since(closeStart))
+				}(open, id)
 			}
 		}
 

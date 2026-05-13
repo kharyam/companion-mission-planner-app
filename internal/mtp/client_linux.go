@@ -42,6 +42,7 @@ static int kam_mtp_probe(LIBMTP_mtpdevice_t *dev) {
 import "C"
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -427,22 +428,38 @@ func releaseGVFS(d *Device) bool {
 	released := false
 	uri := "mtp://[usb:" + busDevString(d) + "]/"
 
+	// Each subcommand gets its own short timeout. Without this, a
+	// confused GVFS daemon or a slow `adb kill-server` can hang the
+	// caller (Refresh, which holds r.mu) for seconds — and we're
+	// already on the slow path here, so missing one competitor isn't
+	// worth blocking the API response on.
+	const cmdTimeout = 3 * time.Second
+	run := func(label, bin string, args ...string) {
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+		defer cancel()
+		err := exec.CommandContext(ctx, bin, args...).Run()
+		slog.Info("releaseGVFS step", "step", label, "elapsed", time.Since(start), "err", err)
+	}
+
 	// (1) GVFS user-mounted volume → ask GVFS to drop it nicely.
 	for _, candidate := range [][]string{
 		{"gio", "mount", "-u", uri},
 		{"gvfs-mount", "-u", uri},
 	} {
-		path, err := exec.LookPath(candidate[0])
+		bin, err := exec.LookPath(candidate[0])
 		if err != nil {
 			continue
 		}
-		cmd := exec.Command(path, candidate[1:]...)
-		if out, err := cmd.CombinedOutput(); err == nil {
-			slog.Info("released GVFS MTP mount", "uri", uri)
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+		out, runErr := exec.CommandContext(ctx, bin, candidate[1:]...).CombinedOutput()
+		cancel()
+		slog.Info("releaseGVFS step", "step", candidate[0], "elapsed", time.Since(start), "err", runErr,
+			"out", strings.TrimSpace(string(out)))
+		if runErr == nil {
 			released = true
 			break
-		} else {
-			slog.Debug("gvfs unmount", "tool", candidate[0], "out", strings.TrimSpace(string(out)), "err", err)
 		}
 	}
 
@@ -452,9 +469,9 @@ func releaseGVFS(d *Device) bool {
 	if pkill, err := exec.LookPath("pkill"); err == nil {
 		// kiod6 sometimes has the device handle even when no Dolphin
 		// window is open. SIGTERM is fine — KDE respawns it lazily.
-		_ = exec.Command(pkill, "-f", "kiod6").Run()
+		run("pkill kiod6", pkill, "-f", "kiod6")
 		// gvfsd-mtp respawns from gvfs-mtp-volume-monitor on next plug.
-		_ = exec.Command(pkill, "-f", "gvfsd-mtp").Run()
+		run("pkill gvfsd-mtp", pkill, "-f", "gvfsd-mtp")
 		released = true
 	}
 
@@ -471,8 +488,7 @@ func releaseGVFS(d *Device) bool {
 		// when we're already on the retry path — that's why
 		// releaseGVFS is called only after the first open attempt
 		// failed.
-		_ = exec.Command(adb, "kill-server").Run()
-		slog.Info("stopped adb-server to free USB interface for MTP")
+		run("adb kill-server", adb, "kill-server")
 		released = true
 	}
 
