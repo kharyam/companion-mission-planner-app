@@ -30,21 +30,32 @@ Reload: `sudo udevadm control --reload-rules && sudo udevadm trigger`.
 
 ### MTP backend (for DJI RC 2 and other ADB-disabled devices)
 
-The default pre-built binary uses ADB only. The DJI RC 2 ships with developer options stripped and **does not support ADB** — it must be reached via MTP. To enable the MTP backend you have to build from source with cgo:
+The default pre-built binary uses ADB only. The DJI RC 2 ships with developer options stripped and **does not support ADB** — it must be reached via MTP. To enable the MTP backend you have to build from source with cgo, which means you need a C toolchain in addition to Go.
 
 ```bash
 # Fedora
-sudo dnf install libmtp libmtp-devel
+sudo dnf install libmtp libmtp-devel gcc pkgconf-pkg-config
 
 # Debian / Ubuntu
-sudo apt install libmtp-dev libmtp-runtime
+sudo apt install libmtp-dev libmtp-runtime build-essential pkg-config
 
-# Then build
+# Arch
+sudo pacman -S libmtp pkgconf base-devel
+
+# Then build (CGO_ENABLED=1 happens inside the Makefile target)
 make build-mtp
 ./dist/kam-transfer-mtp serve
 ```
 
-The MTP backend coexists with ADB: both transports are scanned, and any device showing up on ADB takes precedence over the same device showing up on MTP. If the RC 2 doesn't appear in `list-devices`, run `mtp-detect` (from `libmtp-examples`) to confirm libmtp sees the device.
+`make build-mtp` invokes `go build` with `CGO_ENABLED=1`; the build picks up `libmtp` through `pkg-config` (the cgo directive in `internal/mtp/client_linux.go`). If the build fails with "pkg-config: command not found" or "libmtp.pc not found", one of the packages above is missing. The output binary is `dist/kam-transfer-mtp`, separate from the ADB-only `dist/kam-transfer`.
+
+The MTP backend coexists with ADB: both transports are scanned, any device showing up on both is deduplicated (ADB wins for shadows of MTP-only DJI hardware that ADB enumerates but can never authorize). If the RC 2 doesn't appear in `list-devices`, run `mtp-detect` (from `libmtp-examples`) to confirm libmtp sees the device.
+
+#### Desktop interference (GVFS / KDE / adb-server)
+
+On a typical GNOME or KDE desktop, the moment a DJI USB device enumerates, **`gvfsd-mtp` and/or `kiod6` immediately claim its MTP interface** (so the file-manager sidebar can browse it) and **`adb-server` auto-claims the USB device** for any vendor in its allowlist — even a controller that can't speak ADB. libmtp's `libusb_claim_interface` then fails with "device is busy."
+
+The daemon transparently handles this on its first failed open: it asks GVFS to release the volume (`gio mount -u`), kills the relevant `kiod6` / `gvfsd-mtp` workers (they respawn lazily), and stops `adb-server` (the user can restart it). If you see one-off `releaseGVFS step …` log lines around an MTP open, that's the recovery happening — not an error. Each subcommand has a 3-second timeout so a confused desktop daemon can't hang the request.
 
 ## macOS
 
@@ -76,4 +87,4 @@ make build
 ./dist/kam-transfer serve
 ```
 
-Requires Go 1.22+.
+Requires Go 1.25+. `make build` is CGO-off and pure Go; `make build-mtp` additionally needs a C toolchain, `pkg-config`, and `libmtp` development headers — see the MTP-backend subsection above.

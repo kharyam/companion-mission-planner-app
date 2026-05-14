@@ -19,6 +19,7 @@ KAM Mission Planner runs in a browser, often hosted remotely (e.g. TrueNAS over 
 ```bash
 make build              # CGO_ENABLED=0 — ADB only, cross-compiles cleanly
 make build-mtp          # CGO_ENABLED=1 — adds the libmtp backend for DJI RC 2 support
+                        # needs gcc + pkg-config + libmtp-devel; see docs/INSTALLATION.md
 
 ./dist/kam-transfer serve
 
@@ -76,7 +77,7 @@ See `docs/` for installation, API reference, CLI usage, configuration, troublesh
 
 - Go 1.25+
 - A reachable `adb-server` for ADB-mode devices. Most platforms bundle this with the Android Platform Tools; the daemon will spawn one on `127.0.0.1:5037` if nothing is listening.
-- **For DJI RC 2 (MTP) support:** `libmtp` + `libmtp-devel`, and `CGO_ENABLED=1`. See `docs/INSTALLATION.md` for distro-specific package names. On Linux desktops the daemon will best-effort evict GVFS / `kiod6` / `adb-server` from a fresh DJI USB interface so libmtp can claim it.
+- **For DJI RC 2 (MTP) support:** a C toolchain (`gcc` / `build-essential`), `pkg-config`, and `libmtp` + `libmtp-devel`. Build with `make build-mtp` (which sets `CGO_ENABLED=1`); the output binary is `dist/kam-transfer-mtp`, separate from the ADB-only `dist/kam-transfer`. See `docs/INSTALLATION.md` for distro-specific package names. On Linux desktops the daemon will best-effort evict GVFS / `kiod6` / `adb-server` from a fresh DJI USB interface so libmtp can claim it.
 
 ## License
 
