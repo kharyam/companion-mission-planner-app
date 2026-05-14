@@ -6,56 +6,77 @@ Cross-platform companion daemon for [KAM Mission Planner](https://github.com/kam
 
 KAM Mission Planner runs in a browser, often hosted remotely (e.g. TrueNAS over Tailscale). Browsers can't reach the USB bus. This daemon runs locally on the machine where the controller plugs in, handles all the ADB/MTP plumbing, and surfaces a clean HTTP API the remote UI can call.
 
-## Status
+## What it does
 
-**Scaffold.** The project structure, CLI, HTTP API surface, and module boundaries are in place. Most operations return `NOT_IMPLEMENTED` — see the per-file TODOs. The ESRI preview generator and goadb wrapper have functional skeletons; device protocol details still need real-hardware iteration.
+- **Device discovery.** ADB (for controllers / phones in developer mode) and MTP (for the consumer DJI RC 2, which ships without ADB) — both fed into a unified `/api/devices` view.
+- **Slot listing.** Walks DJI Fly's `Android/data/dji.go.v5/files/waypoint` tree on the device and surfaces each slot with size, mtime, preview-availability, and an optional user-assigned name.
+- **KMZ transfer.** Streams a mission KMZ into the chosen slot. Optionally renders a satellite-tile preview JPEG (ESRI World Imagery) plus one tile per waypoint, so DJI Fly's mission list shows real thumbnails.
+- **Hotplug events.** A WebSocket at `/api/events` emits `device.connected` / `device.disconnected` / `device.refreshed` so the UI updates without polling. ADB events come straight from `adb-server`; MTP devices are detected via a libusb-level poll since libmtp has no hotplug API.
+- **Embedded admin UI.** A built-in zero-dependency web UI at `/ui` lets you list devices, browse slots, push KMZs, regenerate previews, and download mission KMZs without launching Mission Planner.
 
 ## Quick start
 
 ```bash
-# Build
-make build
+make build              # CGO_ENABLED=0 — ADB only, cross-compiles cleanly
+make build-mtp          # CGO_ENABLED=1 — adds the libmtp backend for DJI RC 2 support
 
-# Run the server
 ./dist/kam-transfer serve
 
 # Health check
 curl http://127.0.0.1:8765/api/health
 
-# List connected devices
+# CLI alternatives to the API
 ./dist/kam-transfer list-devices
+./dist/kam-transfer list-slots --device <serial>
+./dist/kam-transfer transfer ./mission.kmz --device <serial> --slot <guid>
 ```
+
+The admin UI is at `http://127.0.0.1:8765/ui`. If you've set `auth.token` in config, the UI prompts for it on first load and stores it in `sessionStorage`; or pass it as `?token=…` once and it'll capture and strip the URL.
 
 ## Cross-compile
 
 ```bash
-make build-all      # linux/amd64, darwin/amd64+arm64, windows/amd64
+make build-all          # linux/amd64, darwin/amd64+arm64, windows/amd64 — CGO off
 ```
 
-Binaries land in `dist/`.
+Binaries land in `dist/`. MTP support requires cgo, so the cross-compiled binaries are ADB-only; build natively on each host with `make build-mtp` if you need RC 2 support there.
+
+## Authentication
+
+By default `auth.token` in `config.yaml` is empty, which disables auth (intended for local-only use). Set it to any opaque string to require it. The middleware accepts it three ways:
+
+- `X-KAM-Token: <token>` header (preferred for REST)
+- `Authorization: Bearer <token>` header
+- `?token=<token>` query string (used by `<img>`/`<a href>`/WebSocket loads that can't carry custom headers)
+
+`/ui` and `/ui/static/*` are unauthenticated by design — they contain no secrets, and gating them defeats the bootstrap flow that needs to load `app.js` before it can prompt for the token.
 
 ## Architecture
 
 ```
-cmd/kam-transfer        CLI entrypoint (cobra)
-cmd/kam-transfer-server thin entrypoint that just invokes `serve`
-internal/adb            ADB transport (wraps goadb)
-internal/mtp            MTP fallback (stub)
-internal/device         device detection + slot management
-internal/preview        ESRI World Imagery preview JPEGs
-internal/kmz            KMZ parse/validate/rewrite
-internal/config         platform-aware YAML config
-internal/api            HTTP + WebSocket server
-pkg/kamtransfer         public embedding API
+cmd/kam-transfer            CLI entrypoint (cobra)
+cmd/kam-transfer-server     thin entrypoint that just invokes `serve`
+internal/adb                ADB transport (wraps goadb)
+internal/mtp                MTP transport — cgo+libmtp on linux, stub elsewhere
+internal/device             registry, hotplug poller, slot operations
+internal/preview            ESRI World Imagery satellite-tile preview JPEGs
+internal/kmz                KMZ parse/validate, placeholder-mission generator
+internal/api                HTTP + WebSocket server
+internal/api/web            embedded admin UI (go:embed static/)
+internal/config             platform-aware YAML config
+internal/names              host-side cache of user-assigned slot names
+internal/slotorder          host-side cache of user-chosen slot ordering
+internal/managed            host-side per-slot "managed" flag store
+pkg/kamtransfer             public embedding API
 ```
 
 See `docs/` for installation, API reference, CLI usage, configuration, troubleshooting, and development guides.
 
 ## Dependencies
 
-- Go 1.22+
-- `adb` server reachable on `127.0.0.1:5037` (goadb speaks to a running adb-server). Most platforms bundle this with the Android Platform Tools.
-- **For DJI RC 2 support:** libmtp (build with `make build-mtp` after installing `libmtp-devel`). The consumer RC 2 doesn't support ADB. See `docs/INSTALLATION.md`.
+- Go 1.25+
+- A reachable `adb-server` for ADB-mode devices. Most platforms bundle this with the Android Platform Tools; the daemon will spawn one on `127.0.0.1:5037` if nothing is listening.
+- **For DJI RC 2 (MTP) support:** `libmtp` + `libmtp-devel`, and `CGO_ENABLED=1`. See `docs/INSTALLATION.md` for distro-specific package names. On Linux desktops the daemon will best-effort evict GVFS / `kiod6` / `adb-server` from a fresh DJI USB interface so libmtp can claim it.
 
 ## License
 
