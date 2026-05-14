@@ -34,6 +34,8 @@ curl http://127.0.0.1:8765/api/health
 
 The admin UI is at `http://127.0.0.1:8765/ui`. If you've set `auth.token` in config, the UI prompts for it on first load and stores it in `sessionStorage`; or pass it as `?token=…` once and it'll capture and strip the URL.
 
+On first startup the daemon writes a comment-rich starter `config.yaml` to its platform default (`~/.config/kam-transfer/config.yaml` on Linux, `~/Library/Application Support/kam-transfer/config.yaml` on macOS, `%APPDATA%\kam-transfer\config.yaml` on Windows) and prints the path to stderr. Edit it to set `auth.token`, change ports, etc.; subsequent runs leave the file alone.
+
 ## Cross-compile
 
 ```bash
