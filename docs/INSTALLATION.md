@@ -57,6 +57,44 @@ On a typical GNOME or KDE desktop, the moment a DJI USB device enumerates, **`gv
 
 The daemon transparently handles this on its first failed open: it asks GVFS to release the volume (`gio mount -u`), kills the relevant `kiod6` / `gvfsd-mtp` workers (they respawn lazily), and stops `adb-server` (the user can restart it). If you see one-off `releaseGVFS step …` log lines around an MTP open, that's the recovery happening — not an error. Each subcommand has a 3-second timeout so a confused desktop daemon can't hang the request.
 
+#### Raspberry Pi / ARM Linux
+
+An MTP binary is published for ARM Linux on every release — handy when the controller plugs into a Pi rather than a desktop. Pick the file matching the Pi's OS architecture (`uname -m`):
+
+- `kam-transfer-mtp-linux-arm64` — 64-bit Raspberry Pi OS (`uname -m` → `aarch64`)
+- `kam-transfer-mtp-linux-armv7` — 32-bit Raspberry Pi OS (`uname -m` → `armv7l` / `armv6l`)
+
+On the Pi, install the libmtp **runtime** (not the `-dev` headers — those are only needed to build) and run it:
+
+```bash
+sudo apt install libmtp9 libmtp-runtime libusb-1.0-0
+curl -L -o kam-transfer https://github.com/kamdynamics/kam-transfer/releases/latest/download/kam-transfer-mtp-linux-arm64
+chmod +x kam-transfer
+./kam-transfer serve
+```
+
+The release binaries are built against Debian 12 "bookworm" — the current Raspberry Pi OS base. On an older Pi OS (bullseye) the glibc/libmtp versions won't match; build from source on the Pi instead, or use the cross-build below.
+
+To run it unattended (survives reboots and SSH disconnects), install the systemd unit from [`deploy/kam-transfer.service`](../deploy/kam-transfer.service):
+
+```bash
+sudo cp kam-transfer /usr/local/bin/
+sudo cp deploy/kam-transfer.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now kam-transfer
+```
+
+**Building the ARM MTP binary yourself.** cgo can't cross-compile libmtp, so the Makefile builds inside an emulated target-arch container. From any machine with `podman` (or `docker`) and qemu binfmt:
+
+```bash
+podman run --rm --privileged docker.io/tonistiigi/binfmt --install arm64,arm
+make build-mtp-linux-arm64      # → dist/kam-transfer-mtp-linux-arm64
+make build-mtp-linux-armv7      # → dist/kam-transfer-mtp-linux-armv7
+# docker instead of podman:  make build-mtp-linux-arm64 CONTAINER=docker
+```
+
+You can also build natively on the Pi itself with `make build-mtp` after installing `libmtp-dev libmtp-runtime build-essential pkg-config` — but on a 512 MB board (e.g. Pi Zero 2 W) the compile is slow and memory-tight, so the cross-build or release download is preferred.
+
 ## macOS
 
 ```bash

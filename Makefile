@@ -45,3 +45,25 @@ build-windows:
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-windows-amd64.exe ./cmd/kam-transfer
 
 build-all: build-linux build-macos build-macos-arm build-windows
+
+# MTP cross-builds for ARM Linux (Raspberry Pi etc.)
+#
+# The MTP backend needs cgo + libmtp, which does not cross-compile cleanly.
+# These targets build *inside* an emulated target-arch container so the
+# native libmtp is linked. Requires a container runtime and qemu binfmt:
+#   podman run --rm --privileged docker.io/tonistiigi/binfmt --install arm64,arm
+# Override the runtime with CONTAINER=docker (CI uses docker).
+.PHONY: build-mtp-linux-arm64 build-mtp-linux-armv7
+CONTAINER ?= podman
+MTP_IMAGE  := docker.io/library/golang:1.25-bookworm
+MTP_DEPS   := apt-get update -qq && apt-get install -y -qq libmtp-dev libusb-1.0-0-dev pkg-config
+
+build-mtp-linux-arm64:
+	$(CONTAINER) run --rm --platform linux/arm64 -v "$(CURDIR)":/src:z -w /src $(MTP_IMAGE) \
+	  bash -c '$(MTP_DEPS) && CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
+	    go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-mtp-linux-arm64 ./cmd/kam-transfer'
+
+build-mtp-linux-armv7:
+	$(CONTAINER) run --rm --platform linux/arm/v7 -v "$(CURDIR)":/src:z -w /src $(MTP_IMAGE) \
+	  bash -c '$(MTP_DEPS) && CGO_ENABLED=1 GOOS=linux GOARCH=arm GOARM=7 \
+	    go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-mtp-linux-armv7 ./cmd/kam-transfer'

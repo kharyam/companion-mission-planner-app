@@ -1,0 +1,28 @@
+# kam-transfer companion daemon — systemd unit
+#
+# Install (e.g. on a Raspberry Pi):
+#   sudo cp kam-transfer-mtp-linux-arm64 /usr/local/bin/kam-transfer
+#   sudo cp deploy/kam-transfer.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now kam-transfer
+#
+# Adjust User= and WorkingDirectory= to taste. The daemon seeds a
+# config.yaml in WorkingDirectory on first run; edit it for the listen
+# port / auth token, then `systemctl restart kam-transfer`.
+
+[Unit]
+Description=KAM Mission Planner companion daemon
+Documentation=https://github.com/kamdynamics/kam-transfer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi
+ExecStart=/usr/local/bin/kam-transfer serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
