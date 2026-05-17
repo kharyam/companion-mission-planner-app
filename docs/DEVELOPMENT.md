@@ -21,12 +21,26 @@ pkg/kamtransfer/         public embedding API
 ## Build
 
 ```bash
-make build         # current platform, ADB-only (CGO_ENABLED=0)
-make build-mtp     # adds libmtp backend (CGO_ENABLED=1, needs libmtp-devel)
-make build-all     # linux/amd64 + macos amd64+arm64 + windows/amd64, ADB-only
+make build                  # current platform, ADB-only (CGO_ENABLED=0)
+make build-mtp              # adds libmtp backend (CGO_ENABLED=1, needs libmtp-devel)
+make build-all              # linux/amd64 + macos amd64+arm64 + windows/amd64, ADB-only
+make build-mtp-linux-arm64  # MTP binary for arm64 Linux (Raspberry Pi etc.)
+make build-mtp-linux-armv7  # MTP binary for 32-bit arm Linux
 ```
 
 Binaries land in `dist/`. Version is `git describe --tags --always --dirty` injected via `-ldflags`.
+
+The `build-mtp-linux-*` targets build inside an emulated target-arch container
+(`golang:1.25-bookworm` + `apt-get install libmtp-dev`) so the native libmtp is
+linked — cgo cannot cross-compile libmtp. They need a container runtime and qemu
+binfmt; default runtime is `podman`, override with `CONTAINER=docker`:
+
+```bash
+podman run --rm --privileged docker.io/tonistiigi/binfmt --install arm64,arm
+make build-mtp-linux-arm64
+```
+
+The `release` workflow runs these in CI on every `v*` tag.
 
 ### Why two build flavors
 

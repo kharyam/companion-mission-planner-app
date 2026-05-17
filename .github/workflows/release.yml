@@ -1,5 +1,6 @@
 name: release
 
+# Cut a release by pushing a tag, e.g.:  git tag v1.2.0 && git push origin v1.2.0
 on:
   push:
     tags: [ 'v*' ]
@@ -8,7 +9,8 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  # Pure-Go, ADB-only binaries — cross-compile cleanly from one host.
+  build-portable:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -38,4 +40,21 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          generate_release_notes: true
+
+  # MTP (libmtp/cgo) binaries for ARM Linux — e.g. a Raspberry Pi where
+  # the controller plugs in. Built inside emulated arm64 / armv7
+  # containers so the native libmtp is linked (cgo can't cross-compile it).
+  build-mtp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags so `git describe` yields the release version
+      - uses: docker/setup-qemu-action@v3   # register qemu binfmt for arm emulation
+      - name: Build MTP binaries (arm64 + armv7)
+        run: make build-mtp-linux-arm64 build-mtp-linux-armv7 CONTAINER=docker
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/kam-transfer-mtp-*
           generate_release_notes: true
