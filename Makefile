@@ -50,9 +50,14 @@ build-all: build-linux build-macos build-macos-arm build-windows
 #
 # The MTP backend needs cgo + libmtp, which does not cross-compile cleanly.
 # These targets build *inside* an emulated target-arch container so the
-# native libmtp is linked. Requires a container runtime and qemu binfmt:
-#   podman run --rm --privileged docker.io/tonistiigi/binfmt --install arm64,arm
-# Override the runtime with CONTAINER=docker (CI uses docker).
+# native libmtp is linked. Requires a container runtime + qemu-user-static
+# (Fedora: `sudo dnf install qemu-user-static`).
+#
+# The container must run rootful: rootless podman gets its own user
+# namespace and can't see the host's binfmt_misc handlers, so an emulated
+# exec fails with "Exec format error". Use a rootful runtime:
+#   make build-mtp-linux-arm64 CONTAINER="sudo podman"   # rootful podman
+#   make build-mtp-linux-arm64 CONTAINER=docker          # docker daemon is rootful (CI uses this)
 .PHONY: build-mtp-linux-arm64 build-mtp-linux-armv7
 CONTAINER ?= podman
 MTP_IMAGE  := docker.io/library/golang:1.25-bookworm
@@ -61,9 +66,9 @@ MTP_DEPS   := apt-get update -qq && apt-get install -y -qq libmtp-dev libusb-1.0
 build-mtp-linux-arm64:
 	$(CONTAINER) run --rm --platform linux/arm64 -v "$(CURDIR)":/src:z -w /src $(MTP_IMAGE) \
 	  bash -c '$(MTP_DEPS) && CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
-	    go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-mtp-linux-arm64 ./cmd/kam-transfer'
+	    go build -buildvcs=false -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-mtp-linux-arm64 ./cmd/kam-transfer'
 
 build-mtp-linux-armv7:
 	$(CONTAINER) run --rm --platform linux/arm/v7 -v "$(CURDIR)":/src:z -w /src $(MTP_IMAGE) \
 	  bash -c '$(MTP_DEPS) && CGO_ENABLED=1 GOOS=linux GOARCH=arm GOARM=7 \
-	    go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-mtp-linux-armv7 ./cmd/kam-transfer'
+	    go build -buildvcs=false -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-mtp-linux-armv7 ./cmd/kam-transfer'
