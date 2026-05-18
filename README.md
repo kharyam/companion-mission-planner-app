@@ -13,6 +13,7 @@ KAM Mission Planner runs in a browser, often hosted remotely (e.g. TrueNAS over 
 - **KMZ transfer.** Streams a mission KMZ into the chosen slot. Optionally renders a satellite-tile preview JPEG (ESRI World Imagery) plus one tile per waypoint, so DJI Fly's mission list shows real thumbnails.
 - **Hotplug events.** A WebSocket at `/api/events` emits `device.connected` / `device.disconnected` / `device.refreshed` so the UI updates without polling. ADB events come straight from `adb-server`; MTP devices are detected via a libusb-level poll since libmtp has no hotplug API.
 - **Embedded admin UI.** A built-in zero-dependency web UI at `/ui` lets you list devices, browse slots, push KMZs, regenerate previews, and download mission KMZs without launching Mission Planner.
+- **Front-panel status screen (optional).** On a Raspberry Pi fitted with a Pimoroni Display HAT Mini + PiSugar 3, the daemon drives a 320×240 LCD showing the server URL, battery, network, and controller status, with four buttons for paging / rescan / QR code / safe shutdown. Auto-detected; a silent no-op on any other host.
 
 ## Quick start
 
@@ -66,6 +67,7 @@ internal/preview            ESRI World Imagery satellite-tile preview JPEGs
 internal/kmz                KMZ parse/validate, placeholder-mission generator
 internal/api                HTTP + WebSocket server
 internal/api/web            embedded admin UI (go:embed static/)
+internal/display            optional Raspberry Pi status screen (linux build tag + stub)
 internal/config             platform-aware YAML config
 internal/names              host-side cache of user-assigned slot names
 internal/slotorder          host-side cache of user-chosen slot ordering

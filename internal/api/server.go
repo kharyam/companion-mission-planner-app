@@ -10,11 +10,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kamdynamics/kam-transfer/internal/api/web"
 	"github.com/kamdynamics/kam-transfer/internal/config"
 	"github.com/kamdynamics/kam-transfer/internal/device"
+	"github.com/kamdynamics/kam-transfer/internal/display"
 )
 
 // Server is the local HTTP API that KAM Mission Planner consumes.
@@ -22,6 +24,13 @@ type Server struct {
 	cfg      *config.Config
 	registry *device.Registry
 	logger   *slog.Logger
+
+	// display drives the optional Raspberry Pi front-panel status
+	// screen. It is always constructed but is a no-op without the HAT.
+	display *display.Controller
+	// activeTransfers counts in-flight KMZ transfers so the status
+	// screen can show transfer activity.
+	activeTransfers atomic.Int64
 
 	subsMu sync.RWMutex
 	subs   map[*subscriber]struct{}
@@ -42,12 +51,16 @@ type subscriber struct {
 }
 
 func New(cfg *config.Config, reg *device.Registry, logger *slog.Logger) *Server {
-	return &Server{
+	s := &Server{
 		cfg:      cfg,
 		registry: reg,
 		logger:   logger,
 		subs:     map[*subscriber]struct{}{},
 	}
+	s.display = display.New(cfg, reg, func() bool {
+		return s.activeTransfers.Load() > 0
+	}, logger)
+	return s
 }
 
 // Run starts the HTTP server and blocks until ctx is cancelled.
@@ -73,6 +86,10 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Fan registry-level device events out to WebSocket subscribers.
 	go s.pumpDeviceEvents(ctx)
+
+	// Drive the optional Raspberry Pi front-panel status screen. A
+	// no-op (returns immediately) when the Display HAT is not present.
+	go s.display.Run(ctx)
 
 	errCh := make(chan error, 1)
 	go func() {
