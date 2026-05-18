@@ -6,9 +6,11 @@
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now kam-transfer
 #
-# Adjust User= and WorkingDirectory= to taste. The daemon seeds a
-# config.yaml in WorkingDirectory on first run; edit it for the listen
-# port / auth token, then `systemctl restart kam-transfer`.
+# Adjust User= to taste. On first run the daemon seeds a config at
+# ~User/.config/kam-transfer/config.yaml (i.e. /home/pi/... for User=pi);
+# edit it for the listen port / auth token, then
+# `systemctl restart kam-transfer`. Override the path with --config or
+# the KAM_TRANSFER_CONFIG environment variable.
 
 [Unit]
 Description=KAM Mission Planner companion daemon
