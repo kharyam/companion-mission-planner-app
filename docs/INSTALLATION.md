@@ -84,13 +84,15 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now kam-transfer
 ```
 
-**Building the ARM MTP binary yourself.** cgo can't cross-compile libmtp, so the Makefile builds inside an emulated target-arch container. From any machine with `podman` (or `docker`) and qemu binfmt:
+**Building the ARM MTP binary yourself.** cgo can't cross-compile libmtp, so the Makefile builds inside an emulated target-arch container. Install qemu first (Fedora: `sudo dnf install qemu-user-static`; Debian/Ubuntu: `sudo apt install qemu-user-static`).
+
+The container must run **rootful** — rootless podman gets its own user namespace and can't see the host's `binfmt_misc` handlers, so an emulated exec fails with `Exec format error`. Use `sudo podman` or `docker`:
 
 ```bash
-podman run --rm --privileged docker.io/tonistiigi/binfmt --install arm64,arm
-make build-mtp-linux-arm64      # → dist/kam-transfer-mtp-linux-arm64
-make build-mtp-linux-armv7      # → dist/kam-transfer-mtp-linux-armv7
-# docker instead of podman:  make build-mtp-linux-arm64 CONTAINER=docker
+make build-mtp-linux-arm64 CONTAINER="sudo podman"   # → dist/kam-transfer-mtp-linux-arm64
+make build-mtp-linux-armv7 CONTAINER="sudo podman"   # → dist/kam-transfer-mtp-linux-armv7
+# or, if docker is installed (its daemon is already rootful):
+make build-mtp-linux-arm64 CONTAINER=docker
 ```
 
 You can also build natively on the Pi itself with `make build-mtp` after installing `libmtp-dev libmtp-runtime build-essential pkg-config` — but on a 512 MB board (e.g. Pi Zero 2 W) the compile is slow and memory-tight, so the cross-build or release download is preferred.
