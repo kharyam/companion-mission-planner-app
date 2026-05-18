@@ -17,6 +17,7 @@ type Config struct {
 	ADB     ADBConfig     `yaml:"adb"`
 	Logging LoggingConfig `yaml:"logging"`
 	Auth    AuthConfig    `yaml:"auth"`
+	Display DisplayConfig `yaml:"display"`
 }
 
 type ServerConfig struct {
@@ -49,6 +50,24 @@ type LoggingConfig struct {
 
 type AuthConfig struct {
 	Token string `yaml:"token"` // empty disables token auth
+}
+
+// DisplayConfig controls the optional front-panel status screen for a
+// Raspberry Pi fitted with a Pimoroni Display HAT Mini. The feature
+// auto-detects its hardware and no-ops cleanly when absent, so these
+// settings only matter on a HAT-equipped Pi.
+type DisplayConfig struct {
+	// Enabled is a tri-state: nil/absent = auto-detect the HAT; true =
+	// force the attempt (useful to surface init errors); false = never
+	// touch the display hardware.
+	Enabled         *bool    `yaml:"enabled"`
+	RefreshInterval Duration `yaml:"refreshInterval"` // periodic redraw cadence
+	Brightness      int      `yaml:"brightness"`      // backlight, 0-100
+	Rotation        int      `yaml:"rotation"`        // 0 or 180 — HAT mounting orientation
+	// AllowShutdown gates the button-Y long-press safe-shutdown. Off by
+	// default: it runs `sudo systemctl poweroff`, which needs a NOPASSWD
+	// sudoers rule for the service user.
+	AllowShutdown bool `yaml:"allowShutdown"`
 }
 
 // Duration is a yaml-friendly time.Duration.
@@ -98,6 +117,12 @@ func Default() *Config {
 			KeyPath:    "auto",
 		},
 		Logging: LoggingConfig{Level: "info"},
+		Display: DisplayConfig{
+			RefreshInterval: Duration(5 * time.Second),
+			Brightness:      80,
+			Rotation:        180,
+			AllowShutdown:   false,
+		},
 	}
 }
 
@@ -198,6 +223,21 @@ adb:
 logging:
   level: info                    # debug | info | warn | error
   file: ""                       # empty = stderr only
+
+# Optional front-panel status screen for a Raspberry Pi fitted with a
+# Pimoroni Display HAT Mini + PiSugar 3. The feature auto-detects its
+# hardware and is a silent no-op when absent — these settings only
+# matter on a HAT-equipped Pi.
+display:
+  # enabled: leave unset to auto-detect the HAT. Set false to disable
+  # entirely, or true to force the attempt (surfaces init errors).
+  # enabled: true
+  refreshInterval: 5s            # how often the screen redraws
+  brightness: 80                 # backlight, 0-100
+  rotation: 180                  # 0 or 180, to match how the HAT is mounted
+  # allowShutdown: holding button Y for 3s runs "sudo systemctl
+  # poweroff". Off by default; needs a NOPASSWD sudoers rule.
+  allowShutdown: false
 `
 
 // DefaultPath returns the platform-appropriate config path.

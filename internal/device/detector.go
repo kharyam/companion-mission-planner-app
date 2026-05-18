@@ -539,6 +539,21 @@ func (r *Registry) List(ctx context.Context) ([]Info, error) {
 	return out, nil
 }
 
+// Snapshot returns one Info per currently-known device without
+// triggering a Refresh. Unlike List it performs no I/O — it reads the
+// cached registry state under the read lock. Intended for callers that
+// poll frequently (e.g. the front-panel status display) and rely on
+// Watch events to keep that cache fresh.
+func (r *Registry) Snapshot() []Info {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Info, 0, len(r.devices))
+	for _, c := range r.devices {
+		out = append(out, c.Info())
+	}
+	return out
+}
+
 // Lookup returns the Controller for id, or ErrUnknownDevice.
 func (r *Registry) Lookup(id string) (Controller, error) {
 	r.mu.RLock()

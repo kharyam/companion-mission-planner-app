@@ -11,6 +11,10 @@
 # edit it for the listen port / auth token, then
 # `systemctl restart kam-transfer`. Override the path with --config or
 # the KAM_TRANSFER_CONFIG environment variable.
+#
+# For the optional Display HAT Mini status screen, the service user must
+# be in the spi/i2c/gpio groups (`sudo usermod -aG spi,i2c,gpio pi`), or
+# uncomment the SupplementaryGroups line below.
 
 [Unit]
 Description=KAM Mission Planner companion daemon
@@ -25,6 +29,8 @@ WorkingDirectory=/home/pi
 ExecStart=/usr/local/bin/kam-transfer serve
 Restart=on-failure
 RestartSec=5
+# Display HAT Mini status screen — grant GPIO/SPI/I2C access:
+#SupplementaryGroups=spi i2c gpio
 
 [Install]
 WantedBy=multi-user.target

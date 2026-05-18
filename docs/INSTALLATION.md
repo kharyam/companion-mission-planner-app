@@ -97,6 +97,38 @@ make build-mtp-linux-arm64 CONTAINER=docker
 
 You can also build natively on the Pi itself with `make build-mtp` after installing `libmtp-dev libmtp-runtime build-essential pkg-config` — but on a 512 MB board (e.g. Pi Zero 2 W) the compile is slow and memory-tight, so the cross-build or release download is preferred.
 
+#### Front-panel status screen (Display HAT Mini + PiSugar 3)
+
+If the Pi is fitted with a [Pimoroni Display HAT Mini](https://shop.pimoroni.com/products/display-hat-mini) (a 2.0" 320×240 LCD with four buttons) and, optionally, a [PiSugar 3](https://www.pisugar.com/) battery UPS, the daemon drives an on-device status screen — server URL, battery, network, DJI controller state. It is **auto-detected**: the same binary is a silent no-op on a Pi without the HAT, so no separate build is needed (the feature is pure Go — it ships in the ordinary `make build`).
+
+Enable the SPI and I2C buses the hardware needs, and grant the service user access to them:
+
+```bash
+# Enable SPI + I2C — either via raspi-config (Interface Options),
+# or directly in /boot/firmware/config.txt:
+#   dtparam=spi=on
+#   dtparam=i2c_arm=on
+sudo raspi-config nonint do_spi 0
+sudo raspi-config nonint do_i2c 0
+
+# Let the service user reach the GPIO/SPI/I2C device nodes:
+sudo usermod -aG spi,i2c,gpio pi
+sudo reboot
+```
+
+After the reboot, `ls /dev/spidev0.1 /dev/i2c-1` should both succeed, and `i2cdetect -y 1` should show a device at `0x57` if a PiSugar 3 is attached. Start the daemon (`kam-transfer serve`) and the screen lights up; the log line `status display active` confirms detection (or `status display inactive` with a reason if not).
+
+**Buttons:** **A** cycles pages · **B** toggles the backlight · **X** rescans devices · **Y** tap shows a QR code of the server URL.
+
+**Safe shutdown (optional):** holding **Y** for 3 seconds powers the Pi down — useful with the PiSugar UPS — but only when `display.allowShutdown: true` in `config.yaml` *and* the service user may run `systemctl poweroff`. Grant that with a sudoers drop-in, e.g.:
+
+```
+# /etc/sudoers.d/kam-transfer-poweroff
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
+```
+
+Tune the screen with the `display:` block in `config.yaml` — see [CONFIGURATION.md](CONFIGURATION.md#status-display). If the HAT is mounted the other way up, set `rotation: 0`.
+
 ## macOS
 
 ```bash

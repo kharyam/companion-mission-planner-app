@@ -13,6 +13,24 @@ KAM Mission Planner runs in a browser, often hosted remotely (e.g. TrueNAS over 
 - **KMZ transfer.** Streams a mission KMZ into the chosen slot. Optionally renders a satellite-tile preview JPEG (ESRI World Imagery) plus one tile per waypoint, so DJI Fly's mission list shows real thumbnails.
 - **Hotplug events.** A WebSocket at `/api/events` emits `device.connected` / `device.disconnected` / `device.refreshed` so the UI updates without polling. ADB events come straight from `adb-server`; MTP devices are detected via a libusb-level poll since libmtp has no hotplug API.
 - **Embedded admin UI.** A built-in zero-dependency web UI at `/ui` lets you list devices, browse slots, push KMZs, regenerate previews, and download mission KMZs without launching Mission Planner.
+- **Front-panel status screen (optional).** On a Raspberry Pi fitted with a Pimoroni Display HAT Mini + PiSugar 3, the daemon drives a 320×240 LCD showing the server URL, battery, network, and controller status, with four buttons for paging / rescan / QR code / safe shutdown. Auto-detected; a silent no-op on any other host.
+
+## Front-panel status screen
+
+When the daemon runs on a Raspberry Pi with a [Pimoroni Display HAT Mini](https://shop.pimoroni.com/products/display-hat-mini) and a [PiSugar 3](https://www.pisugar.com/) UPS, it renders a live status screen — no SSH needed to see that the daemon is up, where to point the KAM web UI, the battery level, or whether a controller is connected. Pages cycle with button **A**; **B** toggles the backlight, **X** rescans devices, **Y** shows a QR code (hold 3s for a safe shutdown). Setup is in [docs/INSTALLATION.md](docs/INSTALLATION.md#front-panel-status-screen-display-hat-mini--pisugar-3).
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/display-status.png" width="260"><br><sub><b>Status</b> — server URL, battery, controller</sub></td>
+    <td align="center"><img src="docs/images/display-transfer.png" width="260"><br><sub><b>Transfer</b> — mission write in progress</sub></td>
+    <td align="center"><img src="docs/images/display-system.png" width="260"><br><sub><b>System</b> — network &amp; hardware detail</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/display-status-warning.png" width="260"><br><sub><b>Warning state</b> — no controller, low battery</sub></td>
+    <td align="center"><img src="docs/images/display-qr.png" width="260"><br><sub><b>QR</b> — scan to open the KAM UI</sub></td>
+    <td align="center"><img src="docs/images/display-shutdown.png" width="260"><br><sub><b>Safe shutdown</b> — button Y held 3s</sub></td>
+  </tr>
+</table>
 
 ## Quick start
 
@@ -66,6 +84,7 @@ internal/preview            ESRI World Imagery satellite-tile preview JPEGs
 internal/kmz                KMZ parse/validate, placeholder-mission generator
 internal/api                HTTP + WebSocket server
 internal/api/web            embedded admin UI (go:embed static/)
+internal/display            optional Raspberry Pi status screen (linux build tag + stub)
 internal/config             platform-aware YAML config
 internal/names              host-side cache of user-assigned slot names
 internal/slotorder          host-side cache of user-chosen slot ordering

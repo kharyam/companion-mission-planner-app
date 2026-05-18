@@ -124,6 +124,11 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Mark a transfer in flight so the front-panel status screen can
+	// show it. The defer covers the optional waypoint-image push below.
+	s.activeTransfers.Add(1)
+	defer s.activeTransfers.Add(-1)
+
 	res, err := s.registry.TransferWithMeta(r.Context(), deviceID, guid, bytes.NewReader(rewritten), meta)
 	if err != nil {
 		s.handleRegistryError(w, err)

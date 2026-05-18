@@ -44,6 +44,14 @@ logging:
 
 auth:
   token: ""                      # empty disables auth (default for local dev)
+
+display:
+  # enabled: leave unset to auto-detect the Display HAT Mini; set
+  # false to disable, or true to force the attempt.
+  refreshInterval: 5s            # how often the status screen redraws
+  brightness: 80                 # backlight, 0-100
+  rotation: 180                  # 0 or 180, to match how the HAT is mounted
+  allowShutdown: false           # gate the button-Y safe shutdown
 ```
 
 ## CORS
@@ -57,3 +65,11 @@ Browsers refuse to call `localhost:8765` from a remote KAM origin unless that or
 ## Auth token
 
 For multi-user machines (e.g. shared workstation), set `auth.token` to a random string and configure KAM to send it as `X-KAM-Token`. Without a token, any process on the same machine could trigger transfers.
+
+## Status display
+
+When the daemon runs on a Raspberry Pi fitted with a [Pimoroni Display HAT Mini](https://shop.pimoroni.com/products/display-hat-mini) (a 2.0" 320×240 LCD with four buttons) and, optionally, a [PiSugar 3](https://www.pisugar.com/) battery UPS, it drives a front-panel status screen showing the server URL, battery, network, and DJI controller state.
+
+The hardware is auto-detected at startup; on a Pi without the HAT, or any non-Pi host, the `display` section is simply ignored. `enabled` is tri-state — omit it to auto-detect, set it `false` to disable the feature outright, or `true` to force the attempt (which surfaces hardware-init errors in the log).
+
+Buttons: **A** cycles pages · **B** toggles the backlight · **X** rescans devices · **Y** taps to show a QR code of the server URL. Holding **Y** for 3 seconds triggers a safe shutdown, but only when `allowShutdown: true` — and the service user must be allowed to run `systemctl poweroff` (a polkit or sudoers rule). See `docs/INSTALLATION.md` for Pi wiring and setup.

@@ -12,11 +12,16 @@ internal/preview/        ESRI tile renderer
 internal/kmz/            parse, validate, GUID rewrite
 internal/config/         platform-aware YAML loader
 internal/api/            net/http server + WebSocket
+internal/display/        optional Raspberry Pi front-panel status screen
 internal/version/        ldflags-injected version string
 pkg/kamtransfer/         public embedding API
 ```
 
 `internal/` packages are not importable from outside the module. `pkg/kamtransfer` re-exports the minimum surface for embedders.
+
+### internal/display build tags
+
+`internal/display` follows the same split-by-build-tag shape as `internal/mtp`. The platform-agnostic files (`display.go`, `render.go`, `hardware.go`, `pisugar.go`) compile everywhere and are fully unit-testable on a desktop — the renderer and the PiSugar register math have tests that need no hardware. The hardware-touching files (`hardware_linux.go`, `hat_linux.go`, `st7789_linux.go`, `pisugar_linux.go`) are `//go:build linux` and use periph.io (pure Go — **no cgo**); every other platform compiles `hardware_stub.go`, whose `detectHardware` returns `ErrNoHardware`. So the status-screen feature ships in the default `make build` with no extra build flags, yet `make build-all` still cross-compiles cleanly.
 
 ## Build
 
