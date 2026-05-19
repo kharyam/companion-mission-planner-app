@@ -11,6 +11,9 @@ type ConnectionType string
 const (
 	ConnADB ConnectionType = "adb"
 	ConnMTP ConnectionType = "mtp"
+	// ConnUSB is a USB Mass Storage volume — a camera/drone SD card in a
+	// reader, or a drone exposing its storage as a block device.
+	ConnUSB ConnectionType = "usb"
 )
 
 // Device kinds. A connected device is classified by inspecting its

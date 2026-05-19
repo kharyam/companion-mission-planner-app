@@ -97,6 +97,14 @@ make build-mtp-linux-arm64 CONTAINER=docker
 
 You can also build natively on the Pi itself with `make build-mtp` after installing `libmtp-dev libmtp-runtime build-essential pkg-config` — but on a 512 MB board (e.g. Pi Zero 2 W) the compile is slow and memory-tight, so the cross-build or release download is preferred.
 
+#### Browsing drone/camera media off USB storage
+
+Modern DJI drones (e.g. the Mini 5 Pro) expose their footage as **USB Mass Storage**, not MTP — read either by plugging the drone in directly or, more reliably on a low-power board, by putting its microSD card in a USB card reader. The daemon detects such a volume, mounts it **read-only**, and surfaces its photos/videos in the media gallery.
+
+Mounting needs the `CAP_SYS_ADMIN` capability. The bundled `kam-transfer.service` already grants it via `AmbientCapabilities=CAP_SYS_ADMIN`; if you run the daemon some other way, grant that capability or the USB-media feature is simply skipped (the rest of the daemon is unaffected). exFAT cards need kernel exFAT support — built in since Linux 5.4, so any current Raspberry Pi OS has it.
+
+> A USB card reader exposes the **SD card** only, not a drone's internal storage. Recording to the SD card (the normal field setup) keeps everything reachable.
+
 #### Front-panel status screen (Display HAT Mini + PiSugar 3)
 
 If the Pi is fitted with a [Pimoroni Display HAT Mini](https://shop.pimoroni.com/products/display-hat-mini) (a 2.0" 320×240 LCD with four buttons) and, optionally, a [PiSugar 3](https://www.pisugar.com/) battery UPS, the daemon drives an on-device status screen — server URL, battery, network, DJI controller state. It is **auto-detected**: the same binary is a silent no-op on a Pi without the HAT, so no separate build is needed (the feature is pure Go — it ships in the ordinary `make build`).

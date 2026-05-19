@@ -394,6 +394,7 @@ main {
 .badge.bad   { background: rgba(239, 68, 68, 0.15); color: var(--bad); }
 .badge.adb   { background: rgba(255, 0, 0, 0.18); color: #ff5050; }
 .badge.mtp   { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.badge.usb   { background: rgba(96, 165, 250, 0.15); color: #93c5fd; }
 
 /* ----- transfer form ----- */
 

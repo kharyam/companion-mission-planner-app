@@ -29,6 +29,10 @@ WorkingDirectory=/home/pi
 ExecStart=/usr/local/bin/kam-transfer serve
 Restart=on-failure
 RestartSec=5
+# Mounting camera/drone USB storage (a card reader, or a drone in Mass
+# Storage mode) read-only needs CAP_SYS_ADMIN. Without it the daemon
+# still runs — it just can't browse media off USB block devices.
+AmbientCapabilities=CAP_SYS_ADMIN
 # Display HAT Mini status screen — grant GPIO/SPI/I2C access:
 #SupplementaryGroups=spi i2c gpio
 

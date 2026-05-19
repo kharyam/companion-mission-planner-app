@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kamdynamics/kam-transfer/internal/adb"
+	"github.com/kamdynamics/kam-transfer/internal/blockdev"
 	"github.com/kamdynamics/kam-transfer/internal/config"
 	"github.com/kamdynamics/kam-transfer/internal/kmz"
 	"github.com/kamdynamics/kam-transfer/internal/managed"
@@ -89,6 +91,25 @@ type Registry struct {
 	// is currently consuming Watch's channel. Buffered so producers
 	// never block; drops on overflow with a debug log.
 	eventBus chan Event
+
+	// msVolumes tracks USB Mass Storage volumes we've inspected, keyed
+	// by blockdev volume ID. Persisted across Refreshes so a card is
+	// mounted and probed once, not on every scan.
+	msVolumes map[string]*msVolume
+
+	// massStorageDir is where we mount media volumes (one subdir per
+	// volume). Cleared on startup so a crashed run leaves nothing behind.
+	massStorageDir string
+}
+
+// msVolume is the registry's record of one USB Mass Storage volume.
+type msVolume struct {
+	id          string
+	devPath     string
+	mountpoint  string
+	mountedByUs bool // true if we mounted it (vs. the OS already had it)
+	isMedia     bool // true if it carries a camera/drone media layout
+	controller  *massStorageController
 }
 
 // NewRegistry creates a registry. It does not start polling; the API
@@ -119,7 +140,12 @@ func NewRegistry(cfg *config.Config, logger *slog.Logger) (*Registry, error) {
 		names:          store,
 		order:          orderStore,
 		managed:        managedStore,
+		msVolumes:      map[string]*msVolume{},
+		massStorageDir: filepath.Join(os.TempDir(), "kam-transfer-mounts"),
 	}
+	// Drop any mounts a previous (possibly crashed) run left behind —
+	// MTP-style object IDs and mount state don't survive a restart.
+	cleanMassStorageDir(r.massStorageDir, logger)
 	t, err := adb.Dial(cfg.ADB.ServerHost, cfg.ADB.ServerPort)
 	if err != nil {
 		// We don't fail registry construction if adb-server is unreachable;
@@ -273,7 +299,153 @@ func (r *Registry) Refresh(ctx context.Context) error {
 			}
 		}
 	}
+
+	// USB Mass Storage: card readers and modern DJI drones (Mini 5 Pro
+	// etc.) expose footage as a block-device filesystem, not MTP.
+	r.scanMassStorage()
 	return nil
+}
+
+// scanMassStorage discovers USB Mass Storage volumes, mounts and probes
+// any newly-seen ones, and registers those that carry a camera/drone
+// media layout. Volumes that have gone away are unmounted. Caller must
+// hold r.mu.
+func (r *Registry) scanMassStorage() {
+	vols, err := blockdev.Scan()
+	if err != nil {
+		r.logger.Debug("blockdev scan failed", "err", err)
+		return
+	}
+	seen := map[string]bool{}
+	for _, v := range vols {
+		seen[v.ID] = true
+		mv := r.msVolumes[v.ID]
+		if mv == nil {
+			mv = r.probeVolume(v)
+			r.msVolumes[v.ID] = mv
+		}
+		if mv.isMedia && mv.controller != nil {
+			r.devices[mv.id] = mv.controller
+		}
+	}
+	// Drop volumes that are no longer present.
+	for id, mv := range r.msVolumes {
+		if seen[id] {
+			continue
+		}
+		if mv.mountedByUs && mv.mountpoint != "" {
+			if err := blockdev.Unmount(mv.mountpoint); err != nil {
+				r.logger.Warn("unmount failed", "id", id, "err", err)
+			}
+			_ = os.Remove(mv.mountpoint)
+		}
+		delete(r.msVolumes, id)
+		r.logger.Info("USB mass-storage volume removed", "id", id)
+	}
+}
+
+// probeVolume mounts a freshly-seen volume read-only (unless the OS
+// already has it mounted), checks for a camera/drone media layout, and
+// builds a controller if it finds one. A non-media volume is unmounted
+// again immediately and remembered so it isn't re-probed every scan.
+func (r *Registry) probeVolume(v blockdev.Volume) *msVolume {
+	mv := &msVolume{id: v.ID, devPath: v.DevPath}
+	mountpoint := v.Mountpoint
+	if mountpoint == "" {
+		mountpoint = filepath.Join(r.massStorageDir, sanitizeVolID(v.ID))
+		if err := blockdev.MountRO(v.DevPath, v.FSType, mountpoint); err != nil {
+			r.logger.Warn("mount failed", "dev", v.DevPath, "fstype", v.FSType, "err", err)
+			return mv // isMedia stays false; not retried until replug
+		}
+		mv.mountedByUs = true
+	}
+	mv.mountpoint = mountpoint
+
+	if !hasMediaLayout(mountpoint) {
+		r.logger.Debug("USB volume is not camera storage", "dev", v.DevPath)
+		if mv.mountedByUs {
+			_ = blockdev.Unmount(mountpoint)
+			_ = os.Remove(mountpoint)
+			mv.mountedByUs = false
+			mv.mountpoint = ""
+		}
+		return mv
+	}
+
+	mv.isMedia = true
+	model := v.Label
+	if model == "" {
+		model = "USB storage"
+	}
+	mv.controller = newMassStorageController(v.ID, model, mountpoint, r.logger)
+	r.logger.Info("registered USB mass-storage camera", "dev", v.DevPath, "mount", mountpoint, "model", model)
+	return mv
+}
+
+// hasMediaLayout reports whether a mounted volume looks like camera or
+// drone storage — a DCIM directory at its root, or one level down (DJI
+// drones mounted directly expose InternalStorage/ and SD_card/, each
+// with its own DCIM).
+func hasMediaLayout(mountpoint string) bool {
+	if hasDCIM(mountpoint) {
+		return true
+	}
+	entries, err := os.ReadDir(mountpoint)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() && hasDCIM(filepath.Join(mountpoint, e.Name())) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDCIM reports whether dir contains a DCIM subdirectory.
+func hasDCIM(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() && strings.EqualFold(e.Name(), "DCIM") {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeVolID makes a blockdev volume ID safe to use as a directory
+// name for its mountpoint.
+func sanitizeVolID(id string) string {
+	var b strings.Builder
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
+}
+
+// cleanMassStorageDir unmounts and removes anything left under the
+// mount directory by a previous run. Lazy unmounts are no-ops on dirs
+// that aren't mountpoints.
+func cleanMassStorageDir(dir string, logger *slog.Logger) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		p := filepath.Join(dir, e.Name())
+		_ = blockdev.Unmount(p)
+		if err := os.Remove(p); err != nil {
+			logger.Debug("could not remove stale mount dir", "path", p, "err", err)
+		}
+	}
 }
 
 // controllerFor returns the cached mtpController for d, creating one
@@ -691,6 +863,11 @@ func (r *Registry) Watch(ctx context.Context) <-chan Event {
 			r.pollMTPHotplug(ctx, out)
 		})
 	}
+	// USB Mass Storage hotplug — card readers / drones have no event
+	// source either, so poll the block-device list the same way.
+	wg.Go(func() {
+		r.pollBlockHotplug(ctx, out)
+	})
 	// Drain the internal event bus into the same output channel. This
 	// is how goroutines that don't have a direct handle on `out` (e.g.
 	// the locateWaypointDir background walker) publish events.
@@ -752,6 +929,56 @@ func (r *Registry) pollMTPHotplug(ctx context.Context, out chan<- Event) {
 		curr := make(map[string]struct{}, len(devs))
 		for _, d := range devs {
 			curr[d.Identifier] = struct{}{}
+		}
+
+		now := time.Now()
+		for id := range prev {
+			if _, still := curr[id]; !still {
+				select {
+				case out <- Event{Type: "device.disconnected", DeviceID: id, At: now}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		for id := range curr {
+			if _, was := prev[id]; !was {
+				select {
+				case out <- Event{Type: "device.connected", DeviceID: id, At: now}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		prev = curr
+	}
+}
+
+// pollBlockHotplug ticks at mtpHotplugInterval and emits synthetic
+// connect/disconnect events whenever the set of USB Mass Storage
+// volumes changes — there is no kernel hotplug feed wired up here, so
+// (as with MTP) we diff a periodic scan. Probing/mounting happens in
+// Refresh; this only nudges the UI to re-fetch.
+func (r *Registry) pollBlockHotplug(ctx context.Context, out chan<- Event) {
+	ticker := time.NewTicker(mtpHotplugInterval)
+	defer ticker.Stop()
+
+	prev := map[string]struct{}{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		vols, err := blockdev.Scan()
+		if err != nil {
+			r.logger.Debug("blockdev hotplug scan failed", "err", err)
+			continue
+		}
+		curr := make(map[string]struct{}, len(vols))
+		for _, v := range vols {
+			curr[v.ID] = struct{}{}
 		}
 
 		now := time.Now()

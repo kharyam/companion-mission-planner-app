@@ -44,10 +44,14 @@ List connected devices — DJI controllers, phones, and cameras/drones.
 
 `authorized: false` means the user must approve USB debugging on the controller screen.
 
+`connectionType` is `adb`, `mtp`, or `usb` (a USB Mass Storage volume — a
+camera/drone SD card in a reader, mounted read-only).
+
 `kind` classifies the device by inspecting its storage:
 
 - `controller` — runs DJI Fly; use the `/slots` endpoints.
 - `camera` — a camera/drone with a `DCIM` folder; use the `/media` endpoints.
+  Reached over MTP or USB Mass Storage.
 - `unknown` — not yet classified (a background walk is still running) or
   neither of the above. Re-fetch after the next `device.refreshed` event.
 
