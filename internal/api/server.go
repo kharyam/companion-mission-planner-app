@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +34,11 @@ type Server struct {
 	// screen can show transfer activity.
 	activeTransfers atomic.Int64
 
+	// mediaCacheDir holds downloaded .LRF video proxies so the preview
+	// endpoint can serve them with HTTP range support (smooth seeking)
+	// without re-pulling over MTP on every request.
+	mediaCacheDir string
+
 	subsMu sync.RWMutex
 	subs   map[*subscriber]struct{}
 }
@@ -52,10 +59,11 @@ type subscriber struct {
 
 func New(cfg *config.Config, reg *device.Registry, logger *slog.Logger) *Server {
 	s := &Server{
-		cfg:      cfg,
-		registry: reg,
-		logger:   logger,
-		subs:     map[*subscriber]struct{}{},
+		cfg:           cfg,
+		registry:      reg,
+		logger:        logger,
+		subs:          map[*subscriber]struct{}{},
+		mediaCacheDir: filepath.Join(os.TempDir(), "kam-media-cache"),
 	}
 	s.display = display.New(cfg, reg, func() bool {
 		return s.activeTransfers.Load() > 0
@@ -65,6 +73,12 @@ func New(cfg *config.Config, reg *device.Registry, logger *slog.Logger) *Server 
 
 // Run starts the HTTP server and blocks until ctx is cancelled.
 func (s *Server) Run(ctx context.Context) error {
+	// Start with a clean media cache — proxy clips from a previous run
+	// are tied to MTP object IDs that don't survive a reconnect.
+	if err := os.RemoveAll(s.mediaCacheDir); err != nil {
+		s.logger.Warn("could not clear media cache", "dir", s.mediaCacheDir, "err", err)
+	}
+
 	mux := http.NewServeMux()
 	s.routes(mux)
 
@@ -119,6 +133,11 @@ func (s *Server) pumpDeviceEvents(ctx context.Context) {
 	for ctx.Err() == nil {
 		ch := s.registry.Watch(ctx)
 		for ev := range ch {
+			// A disconnected device's cached .LRF proxies are dead
+			// weight — its MTP object IDs won't survive a reconnect.
+			if ev.Type == "device.disconnected" && ev.DeviceID != "" {
+				_ = os.RemoveAll(filepath.Join(s.mediaCacheDir, sanitizeFilename(ev.DeviceID)))
+			}
 			s.broadcast(Event{Type: ev.Type, Device: ev.DeviceID, At: ev.At})
 		}
 		// Channel closed; either ctx cancelled or watcher errored.
@@ -152,6 +171,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/devices/{deviceId}/slots/{guid}/preview/regenerate", s.handleRegeneratePreview)
 	mux.HandleFunc("POST /api/devices/{deviceId}/slots/{guid}/waypoint-images", s.handlePushWaypointImages)
 	mux.HandleFunc("PUT /api/devices/{deviceId}/slot-order", s.handleSetSlotOrder)
+	mux.HandleFunc("GET /api/devices/{deviceId}/media", s.handleListMedia)
+	mux.HandleFunc("GET /api/devices/{deviceId}/media/{fileId}", s.handleDownloadMedia)
+	mux.HandleFunc("GET /api/devices/{deviceId}/media/{fileId}/thumbnail", s.handleMediaThumbnail)
+	mux.HandleFunc("GET /api/devices/{deviceId}/media/{fileId}/preview", s.handleMediaPreview)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 
 	// Admin UI

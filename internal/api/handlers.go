@@ -203,13 +203,13 @@ func (s *Server) handleInspectKMZ(w http.ResponseWriter, r *http.Request) {
 		HasAction bool    `json:"hasAction,omitempty"`
 	}
 	resp := struct {
-		Name      string `json:"name,omitempty"`
-		Date      string `json:"date,omitempty"`
-		Waypoints []wp   `json:"waypoints"`
-		Author    string `json:"author,omitempty"`
-		Source    string `json:"source,omitempty"`
-		Count     int    `json:"count"`
-		ActionCount int  `json:"actionCount"`
+		Name        string `json:"name,omitempty"`
+		Date        string `json:"date,omitempty"`
+		Waypoints   []wp   `json:"waypoints"`
+		Author      string `json:"author,omitempty"`
+		Source      string `json:"source,omitempty"`
+		Count       int    `json:"count"`
+		ActionCount int    `json:"actionCount"`
 	}{
 		Name:   strings.TrimSpace(strings.TrimSuffix(header.Filename, ".kmz")),
 		Author: mission.Author,
@@ -431,6 +431,13 @@ func (s *Server) handleRegistryError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, CodeSlotNotFound, "preview not found", nil)
 	case errors.Is(err, device.ErrSlotNotFound):
 		writeError(w, http.StatusNotFound, CodeSlotNotFound, err.Error(), nil)
+	case errors.Is(err, device.ErrMediaUnavailable):
+		// 409: the device is reachable but isn't a media-capable camera.
+		writeError(w, http.StatusConflict, CodeMediaUnavailable, err.Error(), nil)
+	case errors.Is(err, device.ErrMediaNotFound):
+		writeError(w, http.StatusNotFound, CodeMediaNotFound, err.Error(), nil)
+	case errors.Is(err, device.ErrThumbnailNotFound):
+		writeError(w, http.StatusNotFound, CodeMediaNotFound, err.Error(), nil)
 	default:
 		// Default: surface as internal error. As we identify more failure
 		// modes (auth revoked, disk full, etc.), add Is-checks above.
@@ -443,4 +450,3 @@ func (s *Server) handleRegistryError(w http.ResponseWriter, err error) {
 func pathParam(r *http.Request, name string) string {
 	return strings.TrimSpace(r.PathValue(name))
 }
-

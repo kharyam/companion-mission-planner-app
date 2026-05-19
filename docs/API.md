@@ -25,7 +25,7 @@ Empty token disables auth (default).
 
 ### `GET /api/devices`
 
-List connected DJI controllers and phones.
+List connected devices — DJI controllers, phones, and cameras/drones.
 
 ```json
 {
@@ -35,13 +35,67 @@ List connected DJI controllers and phones.
       "model": "DJI RC 2",
       "connectionType": "adb",
       "authorized": true,
-      "djiFlyDetected": true
+      "djiFlyDetected": true,
+      "kind": "controller"
     }
   ]
 }
 ```
 
 `authorized: false` means the user must approve USB debugging on the controller screen.
+
+`kind` classifies the device by inspecting its storage:
+
+- `controller` — runs DJI Fly; use the `/slots` endpoints.
+- `camera` — a camera/drone with a `DCIM` folder; use the `/media` endpoints.
+- `unknown` — not yet classified (a background walk is still running) or
+  neither of the above. Re-fetch after the next `device.refreshed` event.
+
+### `GET /api/devices/{deviceId}/media`
+
+List the photos and videos on a camera/drone, newest first. `409
+MEDIA_UNAVAILABLE` if the device isn't a camera.
+
+```json
+{
+  "deviceId": "cam123",
+  "items": [
+    {
+      "id": "1042",
+      "name": "DJI_0001.MP4",
+      "kind": "video",
+      "size": 248311296,
+      "modifiedAt": "2026-05-22T10:30:00Z",
+      "hasPreview": true,
+      "thumbnailUrl": "/api/devices/cam123/media/1042/thumbnail",
+      "previewUrl": "/api/devices/cam123/media/1042/preview",
+      "downloadUrl": "/api/devices/cam123/media/1042"
+    }
+  ]
+}
+```
+
+`id` is the MTP object ID (decimal). `kind` is `photo` or `video`.
+`hasPreview`/`previewUrl` are present only for videos that ship a sibling
+`.LRF` low-res proxy clip.
+
+### `GET /api/devices/{deviceId}/media/{fileId}/thumbnail`
+
+Returns a small JPEG preview (device-provided MTP thumbnail, or the photo's
+embedded EXIF thumbnail). `404 MEDIA_NOT_FOUND` when none is available — the
+caller should fall back to a generic icon.
+
+### `GET /api/devices/{deviceId}/media/{fileId}/preview`
+
+Streams a video's low-res `.LRF` proxy clip as `video/mp4`, with HTTP range
+support for smooth in-browser seeking. The proxy is cached on disk after the
+first request. `404` for photos or videos without a proxy.
+
+### `GET /api/devices/{deviceId}/media/{fileId}`
+
+Downloads the full original photo or video as an attachment. The saved
+filename comes from the optional `?name=` query (the on-device filename);
+without it the file is named `media-<fileId>`.
 
 ### `GET /api/devices/{deviceId}/slots`
 
@@ -112,6 +166,8 @@ Server pushes JSON events:
 | `DEVICE_NOT_FOUND`      | 404  | Unknown device ID |
 | `DEVICE_NOT_AUTHORIZED` | 403  | USB debugging not yet approved |
 | `SLOT_NOT_FOUND`        | 404  | Slot GUID doesn't exist |
+| `MEDIA_UNAVAILABLE`     | 409  | Device isn't a media-capable camera/drone |
+| `MEDIA_NOT_FOUND`       | 404  | Media object ID or thumbnail doesn't exist |
 | `INVALID_GUID`          | 400  | Malformed GUID parameter |
 | `KMZ_INVALID`           | 400  | KMZ failed validation |
 | `KMZ_TOO_LARGE`         | 413  | KMZ exceeds 10 MB cap |
