@@ -141,8 +141,12 @@ func (c *massStorageController) scanLocked() ([]MediaItem, error) {
 			ModifiedAt: f.mtime,
 		}
 		if f.kind == "video" {
+			// Every video is previewable: the file is local, so it
+			// streams directly with HTTP range support (no full
+			// download). A sibling .LRF, when present, is preferred —
+			// it's smaller and always H.264.
+			item.HasPreview = true
 			if proxy, ok := lrf[fsProxyKey(f.path)]; ok {
-				item.HasPreview = true
 				c.lrfByVideo[id] = proxy
 			}
 		}
@@ -244,6 +248,32 @@ func (c *massStorageController) ReadThumbnail(id string) ([]byte, error) {
 		}
 	}
 	return nil, ErrThumbnailNotFound
+}
+
+// PreviewFilePath returns the local file to play for a video preview:
+// its .LRF proxy when one exists, otherwise the original video itself.
+// Serving the original directly (with HTTP range support) lets it
+// stream and seek in the browser without a full download — which is
+// how recent DJI drones such as the Mini 5 Pro, that no longer write
+// .LRF proxies, are previewed. Implements the LocalMedia interface.
+func (c *massStorageController) PreviewFilePath(id string) (string, error) {
+	oid, err := parseObjectID(id)
+	if err != nil {
+		return "", err
+	}
+	if err := c.ensureIndex(); err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if proxy, ok := c.lrfByVideo[oid]; ok {
+		return proxy, nil
+	}
+	p, ok := c.mediaByID[oid]
+	if !ok || mediaKind(filepath.Base(p)) != "video" {
+		return "", ErrMediaNotFound
+	}
+	return p, nil
 }
 
 // fsProxyKey identifies a video and its .LRF sibling as the same clip:

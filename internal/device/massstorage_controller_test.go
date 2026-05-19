@@ -56,11 +56,48 @@ func TestMassStorageListMedia(t *testing.T) {
 	if got := byName["DJI_0002.MP4"].Kind; got != "video" {
 		t.Errorf("DJI_0002.MP4 kind = %q, want video", got)
 	}
+	// Every video is previewable on mass storage — it streams directly,
+	// with or without an .LRF proxy.
 	if !byName["DJI_0002.MP4"].HasPreview {
-		t.Error("DJI_0002.MP4 should have a preview (sibling .LRF)")
+		t.Error("DJI_0002.MP4 should have a preview")
 	}
-	if byName["DJI_0003.MP4"].HasPreview {
-		t.Error("DJI_0003.MP4 has no .LRF — HasPreview should be false")
+	if !byName["DJI_0003.MP4"].HasPreview {
+		t.Error("DJI_0003.MP4 should have a preview (streams directly, no .LRF needed)")
+	}
+}
+
+func TestMassStoragePreviewFilePath(t *testing.T) {
+	c, _ := newTestMSController(t)
+	items, err := c.ListMedia()
+	if err != nil {
+		t.Fatalf("ListMedia: %v", err)
+	}
+	id := map[string]string{}
+	for _, it := range items {
+		id[it.Name] = it.ID
+	}
+
+	// A video with a sibling .LRF previews via the proxy.
+	p, err := c.PreviewFilePath(id["DJI_0002.MP4"])
+	if err != nil {
+		t.Fatalf("PreviewFilePath DJI_0002: %v", err)
+	}
+	if filepath.Base(p) != "DJI_0002.LRF" {
+		t.Errorf("DJI_0002 preview = %s, want DJI_0002.LRF", filepath.Base(p))
+	}
+
+	// A video with no .LRF previews via the original file itself.
+	p, err = c.PreviewFilePath(id["DJI_0003.MP4"])
+	if err != nil {
+		t.Fatalf("PreviewFilePath DJI_0003: %v", err)
+	}
+	if filepath.Base(p) != "DJI_0003.MP4" {
+		t.Errorf("DJI_0003 preview = %s, want DJI_0003.MP4", filepath.Base(p))
+	}
+
+	// A photo has no video preview.
+	if _, err := c.PreviewFilePath(id["DJI_0001.JPG"]); err != ErrMediaNotFound {
+		t.Errorf("photo PreviewFilePath err = %v, want ErrMediaNotFound", err)
 	}
 }
 

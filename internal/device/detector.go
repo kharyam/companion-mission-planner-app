@@ -628,6 +628,15 @@ type MediaBrowser interface {
 	ReadVideoPreview(id string, w io.Writer) (name string, err error)
 }
 
+// LocalMedia is implemented by media controllers whose files live on a
+// mounted filesystem. Such a file can be served straight from disk with
+// HTTP range support, so a video streams and seeks in the browser
+// without being copied or fully downloaded first.
+type LocalMedia interface {
+	// PreviewFilePath returns a local path to play for a video preview.
+	PreviewFilePath(id string) (string, error)
+}
+
 // PushWaypointImages pulls the slot's KMZ, renders a small satellite
 // tile per waypoint, and writes them all into the slot's image/
 // folder along with a regenerated ShotSnap.json index. Returns the
@@ -747,6 +756,22 @@ func (r *Registry) ReadVideoPreview(deviceID, id string, w io.Writer) (string, e
 		return "", ErrMediaUnavailable
 	}
 	return mb.ReadVideoPreview(id, w)
+}
+
+// MediaPreviewPath returns a local filesystem path to serve as a
+// video's preview, for devices whose media live on a mounted volume.
+// Returns ErrMediaUnavailable when the controller can't provide a local
+// path (e.g. MTP) — callers then fall back to streaming a copy.
+func (r *Registry) MediaPreviewPath(deviceID, id string) (string, error) {
+	c, err := r.Lookup(deviceID)
+	if err != nil {
+		return "", err
+	}
+	lm, ok := c.(LocalMedia)
+	if !ok {
+		return "", ErrMediaUnavailable
+	}
+	return lm.PreviewFilePath(id)
 }
 
 // SetSlotName persists a user-assigned name for a slot.

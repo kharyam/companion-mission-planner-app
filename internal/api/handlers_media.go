@@ -1,10 +1,13 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/kamdynamics/kam-transfer/internal/device"
 )
 
 // handleListMedia enumerates the photos and videos on a connected
@@ -51,10 +54,17 @@ func (s *Server) handleMediaThumbnail(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-// handleMediaPreview serves a video's low-res .LRF proxy clip — the same
-// trick DJI Fly uses for smooth playback. The proxy is pulled off the
-// device once, cached on disk, and served via http.ServeContent so the
-// browser gets HTTP range support (seeking) for free.
+// handleMediaPreview streams a video for in-browser playback.
+//
+// For a device whose media live on a mounted volume (a card reader),
+// the file is served straight from disk via http.ServeContent — the
+// browser gets HTTP range support and streams/seeks without downloading
+// the whole clip. A sibling .LRF proxy is used when present; otherwise
+// the original video streams directly (recent DJI drones such as the
+// Mini 5 Pro no longer write .LRF proxies).
+//
+// MTP devices have no local file, so their .LRF proxy is pulled into a
+// disk cache first and that copy is served.
 func (s *Server) handleMediaPreview(w http.ResponseWriter, r *http.Request) {
 	deviceID := pathParam(r, "deviceId")
 	fileID := pathParam(r, "fileId")
@@ -62,25 +72,51 @@ func (s *Server) handleMediaPreview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "fileId must be a numeric MTP object ID", nil)
 		return
 	}
+	// Mass storage: serve the on-disk file directly (Range support).
+	if path, err := s.registry.MediaPreviewPath(deviceID, fileID); err == nil {
+		s.serveMediaFile(w, r, path)
+		return
+	} else if !errors.Is(err, device.ErrMediaUnavailable) {
+		s.handleRegistryError(w, err)
+		return
+	}
+	// MTP: serve the cached .LRF proxy copy.
 	cached, err := s.cachedVideoPreview(deviceID, fileID)
 	if err != nil {
 		s.handleRegistryError(w, err)
 		return
 	}
-	f, err := os.Open(cached)
+	s.serveMediaFile(w, r, cached)
+}
+
+// serveMediaFile streams a local file with http.ServeContent — Range
+// requests, conditional GETs and seeking are all handled by the stdlib.
+func (s *Server) serveMediaFile(w http.ResponseWriter, r *http.Request, path string) {
+	f, err := os.Open(path)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, CodeInternalError, "open cached preview: "+err.Error(), nil)
+		writeError(w, http.StatusInternalServerError, CodeInternalError, "open media file: "+err.Error(), nil)
 		return
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, CodeInternalError, "stat cached preview: "+err.Error(), nil)
+		writeError(w, http.StatusInternalServerError, CodeInternalError, "stat media file: "+err.Error(), nil)
 		return
 	}
-	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Content-Type", videoContentType(path))
 	w.Header().Set("Cache-Control", "private, max-age=300")
-	http.ServeContent(w, r, "preview.mp4", fi.ModTime(), f)
+	http.ServeContent(w, r, filepath.Base(path), fi.ModTime(), f)
+}
+
+// videoContentType picks a Content-Type from the file extension. A .LRF
+// proxy is an H.264/MP4 stream despite its extension.
+func videoContentType(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".mov":
+		return "video/quicktime"
+	default: // .mp4, .m4v, .lrf
+		return "video/mp4"
+	}
 }
 
 // handleDownloadMedia streams the full original photo or video to the
