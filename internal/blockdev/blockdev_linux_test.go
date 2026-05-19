@@ -2,54 +2,52 @@
 
 package blockdev
 
-import (
-	"encoding/json"
-	"testing"
-)
+import "testing"
 
-// TestCollectVolumes checks that USB-ness is inherited by partitions,
-// non-USB disks are ignored, and only mountable filesystem types pass.
-func TestCollectVolumes(t *testing.T) {
+// TestParseLsblk uses the real flat-list shape `lsblk -J -l` emits — the
+// case that exposed the original bug: lsblk reports the USB transport on
+// the disk node only, so a partition (the actual filesystem) carries
+// "tran": null and must be linked to its parent disk via PKNAME.
+func TestParseLsblk(t *testing.T) {
+	// Mirrors a Raspberry Pi with a USB card reader holding a DJI exFAT
+	// card (/dev/sdb1), an empty reader slot (/dev/sda), and the Pi's own
+	// SD card on the mmc bus.
 	const sample = `{"blockdevices":[
-	  {"path":"/dev/nvme0n1","tran":"nvme","fstype":null,"children":[
-	    {"path":"/dev/nvme0n1p1","tran":null,"fstype":"ext4"}]},
-	  {"path":"/dev/sda","tran":"usb","fstype":null,"children":[
-	    {"path":"/dev/sda1","tran":null,"fstype":"exfat","label":"DJICARD","uuid":"1234-ABCD"}]},
-	  {"path":"/dev/sdb","tran":"usb","fstype":"vfat","label":"WHOLE","uuid":"5678-EF01"},
-	  {"path":"/dev/sdc","tran":"usb","fstype":"ext4","label":"LINUXUSB"}
+	  {"name":"sda","path":"/dev/sda","pkname":null,"tran":"usb","fstype":null},
+	  {"name":"sdb","path":"/dev/sdb","pkname":null,"tran":"usb","fstype":null},
+	  {"name":"sdb1","path":"/dev/sdb1","pkname":"sdb","tran":null,"fstype":"exfat","uuid":"4A21-0000"},
+	  {"name":"mmcblk0","path":"/dev/mmcblk0","pkname":null,"tran":"mmc","fstype":null},
+	  {"name":"mmcblk0p2","path":"/dev/mmcblk0p2","pkname":"mmcblk0","tran":null,"fstype":"ext4"},
+	  {"name":"sdc","path":"/dev/sdc","pkname":null,"tran":"usb","fstype":"ext4","label":"LINUXUSB"}
 	]}`
 
-	var doc struct {
-		BlockDevices []lsblkNode `json:"blockdevices"`
+	vols, err := parseLsblk([]byte(sample))
+	if err != nil {
+		t.Fatalf("parseLsblk: %v", err)
 	}
-	if err := json.Unmarshal([]byte(sample), &doc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	// Only /dev/sdb1: USB (via parent sdb) and exFAT. /dev/sda has no
+	// filesystem, the mmc partition isn't USB, /dev/sdc is USB but ext4.
+	if len(vols) != 1 {
+		t.Fatalf("got %d volumes, want 1: %+v", len(vols), vols)
 	}
-	var vols []Volume
-	for i := range doc.BlockDevices {
-		collectVolumes(&doc.BlockDevices[i], false, &vols)
+	v := vols[0]
+	if v.DevPath != "/dev/sdb1" || v.FSType != "exfat" || v.ID != "usbms:4A21-0000" {
+		t.Errorf("volume = %+v, want /dev/sdb1 exfat usbms:4A21-0000", v)
 	}
+}
 
-	// Expect /dev/sda1 (exfat, USB inherited from parent) and /dev/sdb
-	// (vfat, whole-disk USB). The NVMe partition is not USB; /dev/sdc is
-	// USB but ext4, which we don't mount.
-	if len(vols) != 2 {
-		t.Fatalf("got %d volumes, want 2: %+v", len(vols), vols)
+// TestParseLsblkWholeDisk covers a card formatted without a partition
+// table — the filesystem sits on the USB disk node directly.
+func TestParseLsblkWholeDisk(t *testing.T) {
+	const sample = `{"blockdevices":[
+	  {"name":"sdb","path":"/dev/sdb","pkname":null,"tran":"usb","fstype":"vfat","label":"DRONE"}
+	]}`
+	vols, err := parseLsblk([]byte(sample))
+	if err != nil {
+		t.Fatalf("parseLsblk: %v", err)
 	}
-	byDev := map[string]Volume{}
-	for _, v := range vols {
-		byDev[v.DevPath] = v
-	}
-	if v, ok := byDev["/dev/sda1"]; !ok {
-		t.Error("/dev/sda1 (exfat USB partition) should be detected")
-	} else if v.ID != "usbms:1234-ABCD" || v.FSType != "exfat" {
-		t.Errorf("/dev/sda1 = %+v, want ID usbms:1234-ABCD / exfat", v)
-	}
-	if _, ok := byDev["/dev/sdb"]; !ok {
-		t.Error("/dev/sdb (vfat whole-disk USB) should be detected")
-	}
-	if _, ok := byDev["/dev/sdc"]; ok {
-		t.Error("/dev/sdc is ext4 — should not be mountable media")
+	if len(vols) != 1 || vols[0].DevPath != "/dev/sdb" || vols[0].FSType != "vfat" {
+		t.Fatalf("got %+v, want one /dev/sdb vfat volume", vols)
 	}
 }
 

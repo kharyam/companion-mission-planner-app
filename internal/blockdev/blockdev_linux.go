@@ -13,47 +13,56 @@ import (
 	"time"
 )
 
-// lsblkNode mirrors one node of `lsblk --json` output. Disks carry
-// partitions as children; nullable columns decode to "".
+// lsblkNode mirrors one entry of `lsblk --json --list` output. Nullable
+// columns (tran, fstype, …) decode to "".
 type lsblkNode struct {
-	Path       string      `json:"path"`
-	Tran       string      `json:"tran"`
-	FSType     string      `json:"fstype"`
-	Label      string      `json:"label"`
-	UUID       string      `json:"uuid"`
-	Mountpoint string      `json:"mountpoint"`
-	Children   []lsblkNode `json:"children"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	PKName     string `json:"pkname"` // parent kernel name, e.g. "sdb" for sdb1
+	Tran       string `json:"tran"`
+	FSType     string `json:"fstype"`
+	Label      string `json:"label"`
+	UUID       string `json:"uuid"`
+	Mountpoint string `json:"mountpoint"`
 }
 
-// Scan returns every USB-attached filesystem with a mountable type.
-// It shells out to lsblk (always present on Linux) and parses its JSON.
+// Scan returns every USB-attached filesystem with a mountable type. It
+// shells out to lsblk (always present on Linux) and parses its JSON.
 func Scan() ([]Volume, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "lsblk", "-J", "-o",
-		"PATH,TRAN,FSTYPE,LABEL,UUID,MOUNTPOINT").Output()
+	// --list keeps the output flat (no nested children); PKNAME is what
+	// then links a partition back to its disk.
+	out, err := exec.CommandContext(ctx, "lsblk", "-J", "-l", "-o",
+		"NAME,PATH,PKNAME,TRAN,FSTYPE,LABEL,UUID,MOUNTPOINT").Output()
 	if err != nil {
 		return nil, fmt.Errorf("blockdev: lsblk: %w", err)
 	}
+	return parseLsblk(out)
+}
+
+// parseLsblk turns `lsblk -J -l` output into the USB volumes worth
+// mounting. Split out from Scan so it can be unit-tested without lsblk.
+func parseLsblk(jsonOut []byte) ([]Volume, error) {
 	var doc struct {
 		BlockDevices []lsblkNode `json:"blockdevices"`
 	}
-	if err := json.Unmarshal(out, &doc); err != nil {
+	if err := json.Unmarshal(jsonOut, &doc); err != nil {
 		return nil, fmt.Errorf("blockdev: parse lsblk json: %w", err)
 	}
-	var vols []Volume
-	for i := range doc.BlockDevices {
-		collectVolumes(&doc.BlockDevices[i], false, &vols)
+	// lsblk reports the bus transport on the disk node only — and on
+	// some versions not on the partition at all — so record every
+	// node's transport by kernel name first, then resolve each
+	// partition through its parent (PKNAME).
+	tranByName := make(map[string]string, len(doc.BlockDevices))
+	for _, n := range doc.BlockDevices {
+		tranByName[n.Name] = n.Tran
 	}
-	return vols, nil
-}
-
-// collectVolumes walks a disk and its partitions, emitting one Volume
-// per USB-attached node carrying a mountable filesystem. lsblk reports
-// `tran` on the disk node only, so USB-ness is inherited by children.
-func collectVolumes(n *lsblkNode, parentUSB bool, out *[]Volume) {
-	isUSB := parentUSB || n.Tran == "usb"
-	if isUSB && mountable(n.FSType) {
+	var vols []Volume
+	for _, n := range doc.BlockDevices {
+		if !mountable(n.FSType) || !isUSB(n, tranByName) {
+			continue
+		}
 		id := n.UUID
 		if id == "" {
 			id = n.Label
@@ -61,7 +70,7 @@ func collectVolumes(n *lsblkNode, parentUSB bool, out *[]Volume) {
 		if id == "" {
 			id = n.Path
 		}
-		*out = append(*out, Volume{
+		vols = append(vols, Volume{
 			ID:         "usbms:" + id,
 			DevPath:    n.Path,
 			FSType:     n.FSType,
@@ -69,9 +78,16 @@ func collectVolumes(n *lsblkNode, parentUSB bool, out *[]Volume) {
 			Mountpoint: n.Mountpoint,
 		})
 	}
-	for i := range n.Children {
-		collectVolumes(&n.Children[i], isUSB, out)
+	return vols, nil
+}
+
+// isUSB reports whether a node sits on the USB bus — directly (a
+// whole-disk filesystem) or through its parent disk (a partition).
+func isUSB(n lsblkNode, tranByName map[string]string) bool {
+	if n.Tran == "usb" {
+		return true
 	}
+	return n.PKName != "" && tranByName[n.PKName] == "usb"
 }
 
 // mountable reports whether a filesystem type is one we'll mount —
