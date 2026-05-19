@@ -105,6 +105,8 @@ Mounting needs the `CAP_SYS_ADMIN` capability. The bundled `kam-transfer.service
 
 > A USB card reader exposes the **SD card** only, not a drone's internal storage. Recording to the SD card (the normal field setup) keeps everything reachable.
 
+Installing `ffmpeg` (`sudo apt install ffmpeg`) is optional but recommended: with it, the gallery shows a poster-frame thumbnail for each video instead of a generic icon (one frame is decoded on first view and cached). Without ffmpeg, videos just get the icon — nothing else changes. Note that ffmpeg is used only for these still thumbnails; generating full low-res playback proxies is too slow for low-power boards like the Pi Zero, so video playback streams the original file.
+
 #### Front-panel status screen (Display HAT Mini + PiSugar 3)
 
 If the Pi is fitted with a [Pimoroni Display HAT Mini](https://shop.pimoroni.com/products/display-hat-mini) (a 2.0" 320×240 LCD with four buttons) and, optionally, a [PiSugar 3](https://www.pisugar.com/) battery UPS, the daemon drives an on-device status screen — server URL, battery, network, DJI controller state. It is **auto-detected**: the same binary is a silent no-op on a Pi without the HAT, so no separate build is needed (the feature is pure Go — it ships in the ordinary `make build`).

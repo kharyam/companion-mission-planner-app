@@ -50,7 +50,10 @@ func (s *Server) handleMediaThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "no-store")
+	// Thumbnails are derived from immutable media files (and a video
+	// poster costs an ffmpeg run to make) — let the browser keep them
+	// for the browsing session rather than re-fetching on every render.
+	w.Header().Set("Cache-Control", "private, max-age=300")
 	_, _ = w.Write(data)
 }
 
