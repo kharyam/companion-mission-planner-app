@@ -1,6 +1,8 @@
 package device
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -31,13 +33,23 @@ type massStorageController struct {
 	// mu guards the cached media index, (re)built by ListMedia and
 	// lazily by ensureIndex. mediaByID maps a synthetic numeric ID to a
 	// file path; lrfByVideo maps a video's ID to its .LRF proxy path.
-	mu         sync.Mutex
-	mediaByID  map[uint32]string
-	lrfByVideo map[uint32]string
+	// posterCache holds generated video poster JPEGs keyed by file path;
+	// a nil entry means "tried, ffmpeg failed" so we don't retry.
+	mu          sync.Mutex
+	mediaByID   map[uint32]string
+	lrfByVideo  map[uint32]string
+	posterCache map[string][]byte
+
+	// posterSem serialises ffmpeg poster generation — a single 4K HEVC
+	// frame decode already uses every core on a low-power board.
+	posterSem chan struct{}
 }
 
 func newMassStorageController(id, model, root string, logger *slog.Logger) *massStorageController {
-	return &massStorageController{id: id, model: model, root: root, logger: logger}
+	return &massStorageController{
+		id: id, model: model, root: root, logger: logger,
+		posterSem: make(chan struct{}, 1),
+	}
 }
 
 func (c *massStorageController) Info() Info {
@@ -224,18 +236,29 @@ func (c *massStorageController) ReadVideoPreview(id string, w io.Writer) (string
 	return filepath.Base(proxy), err
 }
 
-// ReadThumbnail returns a photo's embedded EXIF thumbnail, read from
-// just the head of the file. Videos have no cheap thumbnail here, so
-// ErrThumbnailNotFound is returned and the UI falls back to an icon.
+// ReadThumbnail returns a small JPEG preview for a media item: a
+// photo's embedded EXIF thumbnail, or a poster frame for a video
+// (decoded once by ffmpeg and cached). Returns ErrThumbnailNotFound
+// when neither is available, and the UI falls back to an icon.
 func (c *massStorageController) ReadThumbnail(id string) ([]byte, error) {
 	p, err := c.pathFor(id)
 	if err != nil {
 		return nil, err
 	}
-	if mediaKind(filepath.Base(p)) != "photo" {
+	switch mediaKind(filepath.Base(p)) {
+	case "photo":
+		return exifThumbnailOf(p)
+	case "video":
+		return c.videoPoster(p)
+	default:
 		return nil, ErrThumbnailNotFound
 	}
-	f, err := os.Open(p)
+}
+
+// exifThumbnailOf returns a photo's embedded EXIF thumbnail, read from
+// just the head of the file.
+func exifThumbnailOf(path string) ([]byte, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -248,6 +271,63 @@ func (c *massStorageController) ReadThumbnail(id string) ([]byte, error) {
 		}
 	}
 	return nil, ErrThumbnailNotFound
+}
+
+// videoPoster returns a JPEG poster frame for a video, generating it
+// with ffmpeg on first request and caching the result (failures
+// included) so the gallery never repeatedly spawns ffmpeg. Generation
+// is serialised via posterSem.
+func (c *massStorageController) videoPoster(path string) ([]byte, error) {
+	if poster, ok := c.cachedPoster(path); ok {
+		if poster == nil {
+			return nil, ErrThumbnailNotFound
+		}
+		return poster, nil
+	}
+
+	// One ffmpeg at a time — a single 4K HEVC frame decode already
+	// saturates the CPU on a low-power board.
+	c.posterSem <- struct{}{}
+	defer func() { <-c.posterSem }()
+
+	// Another request may have produced it while we waited for the slot.
+	if poster, ok := c.cachedPoster(path); ok {
+		if poster == nil {
+			return nil, ErrThumbnailNotFound
+		}
+		return poster, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	poster, err := extractPoster(ctx, path)
+	if err != nil {
+		if errors.Is(err, errFFmpegUnavailable) {
+			// ffmpeg may be installed later — don't cache this miss.
+			return nil, ErrThumbnailNotFound
+		}
+		c.logger.Debug("video poster generation failed", "path", path, "err", err)
+		c.storePoster(path, nil) // negative cache — don't retry this file
+		return nil, ErrThumbnailNotFound
+	}
+	c.storePoster(path, poster)
+	return poster, nil
+}
+
+func (c *massStorageController) cachedPoster(path string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	poster, ok := c.posterCache[path]
+	return poster, ok
+}
+
+func (c *massStorageController) storePoster(path string, poster []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.posterCache == nil {
+		c.posterCache = map[string][]byte{}
+	}
+	c.posterCache[path] = poster
 }
 
 // PreviewFilePath returns the local file to play for a video preview:

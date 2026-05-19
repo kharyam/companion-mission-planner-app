@@ -476,6 +476,8 @@ function openMediaLightbox(m) {
     stage.controls = true;
     stage.autoplay = true;
     stage.className = 'lightbox-media';
+    // Show the poster frame while the clip loads / if playback stalls.
+    if (m.thumbnailUrl) stage.poster = withAuthURL(m.thumbnailUrl);
     // The browser may not be able to decode the clip — most often an
     // HEVC/H.265 original, which many browsers can't play. Fall back to
     // a download prompt rather than a silent black player.
