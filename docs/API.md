@@ -91,9 +91,12 @@ caller should fall back to a generic icon.
 
 ### `GET /api/devices/{deviceId}/media/{fileId}/preview`
 
-Streams a video's low-res `.LRF` proxy clip as `video/mp4`, with HTTP range
-support for smooth in-browser seeking. The proxy is cached on disk after the
-first request. `404` for photos or videos without a proxy.
+Streams a video for in-browser playback, with HTTP range support so it seeks
+without a full download. For USB Mass Storage devices the file is served
+straight from the mounted volume — a `.LRF` proxy clip when one exists,
+otherwise the original video (recent DJI drones such as the Mini 5 Pro no
+longer write `.LRF` proxies). For MTP devices the `.LRF` proxy is cached on
+disk and served. `404` for photos, or for an MTP video with no proxy.
 
 ### `GET /api/devices/{deviceId}/media/{fileId}`
 

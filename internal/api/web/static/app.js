@@ -476,6 +476,15 @@ function openMediaLightbox(m) {
     stage.controls = true;
     stage.autoplay = true;
     stage.className = 'lightbox-media';
+    // The browser may not be able to decode the clip — most often an
+    // HEVC/H.265 original, which many browsers can't play. Fall back to
+    // a download prompt rather than a silent black player.
+    stage.addEventListener('error', () => {
+      const fb = document.createElement('div');
+      fb.className = 'lightbox-fallback';
+      fb.textContent = 'This video can’t be played in the browser — likely an HEVC/H.265 codec. Download the original to view it.';
+      stage.replaceWith(fb);
+    });
   } else if (isVideo) {
     stage = document.createElement('div');
     stage.className = 'lightbox-fallback';
