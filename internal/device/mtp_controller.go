@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,59 +27,64 @@ type mtpController struct {
 	dev    *mtp.Device
 	logger *slog.Logger
 
-	// locateMu guards everything related to the locateWaypointDir
-	// background walk. Reads of waypointDir / previewDir from outside
-	// must take this lock; once locateDone is closed the values are
-	// stable for the lifetime of the controller.
+	// locateMu guards everything related to the classify background
+	// walk. Reads of kind / waypointDir / previewDir / mediaRoot from
+	// outside must take this lock; once locateDone is closed the values
+	// are stable for the lifetime of the controller.
 	locateMu      sync.Mutex
+	kind          string // KindController | KindCamera | KindUnknown
 	waypointDir   *mtp.FileEntry
 	previewDir    *mtp.FileEntry
+	mediaRoot     *mtp.FileEntry // DCIM folder, set when kind == KindCamera
 	locateStarted bool
 	locateDone    chan struct{} // closed when walk finishes (success or fail)
 	locateErr     error
 	onLocated     func() // optional: invoked after walk completes
+
+	// mediaMu guards the cached media index, rebuilt by ListMedia and
+	// lazily by ensureMediaIndex. mediaByID maps an object ID to its
+	// file entry; lrfByVideo maps a video's object ID to its .LRF proxy.
+	mediaMu    sync.Mutex
+	mediaByID  map[uint32]mtp.FileEntry
+	lrfByVideo map[uint32]mtp.FileEntry
 }
 
 func newMTPController(d *mtp.Device, logger *slog.Logger, onLocated func()) *mtpController {
 	return &mtpController{dev: d, logger: logger, onLocated: onLocated}
 }
 
-// Info is non-blocking: it returns whatever locate state has been
+// Info is non-blocking: it returns whatever classify state has been
 // resolved so far. The walk runs in a goroutine started by kickoffLocate
 // (called eagerly when the controller is created), and the controller's
 // onLocated callback emits a WebSocket event when the walk completes so
-// the UI re-fetches and the DJIFlyDetected indicator becomes accurate.
-// Without this the /api/devices response would block on a multi-second
-// PTP walk through Android/data/.
+// the UI re-fetches once the device's Kind is known. Until then Kind is
+// reported as "unknown" and the UI shows an "identifying device" state.
 func (c *mtpController) Info() Info {
-	// Mirror the ADB modelLabel fallback — without it, controllers that
+	// Mirror the ADB modelLabel fallback — without it, devices that
 	// libmtp opens but doesn't surface a Friendly string for produce an
 	// empty Model in /api/devices, which downstream consumers (e.g. the
 	// planner's transfer-history schema requiring deviceName ≥ 1 char)
 	// then reject.
 	model := c.dev.Friendly
 	if model == "" {
-		model = "Unknown DJI device"
+		model = "MTP device"
+	}
+	c.locateMu.Lock()
+	kind := c.kind
+	c.locateMu.Unlock()
+	if kind == "" {
+		kind = KindUnknown
 	}
 	return Info{
 		ID:             c.dev.Identifier,
 		Model:          model,
 		ConnectionType: ConnMTP,
 		// MTP doesn't have an auth dance: if the device shows up,
-		// it's already accessible. For DJI MTP controllers, the
-		// presence of a working *mtp.Device means the device is a
-		// DJI controller and DJI Fly is the only thing on it —
-		// so DJIFlyDetected is effectively redundant with "we got
-		// here." Reporting it as true unconditionally lets the
-		// planner UI flip its status indicator green at Open time
-		// (~30ms) instead of waiting for locateWaypointDir's
-		// multi-second PTP path walk to finish. If the waypoint
-		// subfolder is genuinely missing (user has never used the
-		// waypoint feature), ListSlots surfaces that with a clear
-		// error — but the badge no longer lies stale for 10+s.
+		// it's already accessible.
 		Authorized:     true,
 		State:          "online",
-		DJIFlyDetected: true,
+		Kind:           kind,
+		DJIFlyDetected: kind == KindController,
 	}
 }
 
@@ -132,7 +139,7 @@ func (c *mtpController) awaitLocate() error {
 }
 
 func (c *mtpController) runLocate() {
-	err := c.locateWaypointDir()
+	err := c.classify()
 	c.locateMu.Lock()
 	c.locateErr = err
 	done := c.locateDone
@@ -143,72 +150,109 @@ func (c *mtpController) runLocate() {
 	}
 }
 
-// locateWaypointDir walks the MTP tree to find Android/data/dji.go.v5/
-// files/waypoint. Returns nil on success (with side-effect of populating
-// c.waypointDir + c.previewDir), or an error if the structure doesn't
-// match what DJI Fly expects.
+// classify walks the device's storages once and decides what kind of
+// device this is: a controller (DJI Fly's Android waypoint tree is
+// present), a camera/drone (a DCIM folder is present), or unknown. It
+// populates c.kind plus c.waypointDir/c.previewDir (controller) or
+// c.mediaRoot (camera).
 //
-// DJI Fly uses the same Android layout on every controller, but the
-// top-level storage name differs ("Internal shared storage", "Internal
-// storage", localized variants, etc.) — so we walk every storage and
-// pick whichever one has the Android/data tree.
-// locateWaypointDir does the actual PTP walk. Callers should go through
-// kickoffLocate / awaitLocate so the work is properly serialized; this
-// function is otherwise a plain synchronous routine.
-func (c *mtpController) locateWaypointDir() error {
+// It returns an error only for genuine I/O failures — a device that is
+// simply neither a controller nor a camera resolves to KindUnknown with
+// a nil error. Callers should go through kickoffLocate / awaitLocate so
+// the work is properly serialized.
+//
+// The DJI Fly Android layout is the same on every controller, but the
+// top-level storage name differs ("Internal shared storage", localized
+// variants, etc.) — so we walk every storage and check each one.
+func (c *mtpController) classify() error {
 	start := time.Now()
 	storages, err := c.dev.ListDir(nil)
 	if err != nil {
 		return fmt.Errorf("list storages: %w", err)
 	}
 	c.logger.Debug("mtp storages enumerated", "count", len(storages))
-	for _, s := range storages {
-		c.logger.Debug("mtp storage", "name", s.Name, "id", s.StorageID)
-	}
-	// DJI Fly always lives under the device's main user-visible storage.
-	// On the RC 2 that's "Internal shared storage"; secondary entries
-	// like "disk" never carry the Android tree but cost a full
-	// 6-segment PTP path walk to fall through, so try the most likely
-	// candidate first.
+	// Try the most likely controller storage first; "disk"-type
+	// secondary entries rarely carry the Android tree.
 	ordered := append([]mtp.FileEntry(nil), storages...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return storagePriority(ordered[i].Name) > storagePriority(ordered[j].Name)
 	})
-	const relative = "Android/data/dji.go.v5/files/waypoint"
-	var attempted []string
+
+	var dcimRoot *mtp.FileEntry
 	for i := range ordered {
-		full := ordered[i].Name + "/" + relative
-		attempted = append(attempted, full)
-		entry, err := c.dev.LookupPath(full)
+		s := ordered[i]
+		children, err := c.dev.ListDir(&s)
 		if err != nil {
-			if errors.Is(err, mtp.ErrNotFound) {
-				c.logger.Debug("waypoint dir not on this storage", "path", full)
-				continue
-			}
 			return err
 		}
-		// Resolve map_preview as a direct child of the waypoint folder
-		// instead of LookupPath'ing the full string — that would re-walk
-		// all six segments of the Android tree and pay the metadata
-		// cost on /Android/data/ a second time.
-		var preview *mtp.FileEntry
-		if p, err := findChild(c.dev, entry, "map_preview"); err == nil && p != nil {
-			preview = p
+		// Controller? Descend the DJI Fly waypoint tree, but only if an
+		// Android/ folder is even present — otherwise skip the multi-
+		// segment PTP walk that would just fall through with ErrNotFound.
+		if findIn(children, "Android") != nil {
+			const relative = "Android/data/dji.go.v5/files/waypoint"
+			full := s.Name + "/" + relative
+			entry, err := c.dev.LookupPath(full)
+			switch {
+			case err == nil:
+				var preview *mtp.FileEntry
+				if p, perr := findChild(c.dev, entry, "map_preview"); perr == nil && p != nil {
+					preview = p
+				}
+				c.locateMu.Lock()
+				c.kind = KindController
+				c.waypointDir = entry
+				c.previewDir = preview
+				c.locateMu.Unlock()
+				c.logger.Info("classified MTP device as controller", "path", full, "elapsed", time.Since(start))
+				return nil
+			case errors.Is(err, mtp.ErrNotFound):
+				c.logger.Debug("waypoint dir not on this storage", "path", full)
+			default:
+				return err
+			}
 		}
+		// Camera? Remember the first DCIM folder we see, but keep
+		// scanning — a later storage could still be a controller, which
+		// wins.
+		if dcimRoot == nil {
+			if dcim := findIn(children, "DCIM"); dcim != nil {
+				cp := *dcim
+				dcimRoot = &cp
+			}
+		}
+	}
+
+	if dcimRoot != nil {
 		c.locateMu.Lock()
-		c.waypointDir = entry
-		c.previewDir = preview
+		c.kind = KindCamera
+		c.mediaRoot = dcimRoot
 		c.locateMu.Unlock()
-		c.logger.Info("located DJI Fly waypoint folder", "path", full, "object_id", entry.ObjectID, "elapsed", time.Since(start))
+		c.logger.Info("classified MTP device as camera", "storage", dcimRoot.StorageID, "elapsed", time.Since(start))
 		return nil
 	}
-	c.logger.Warn("DJI Fly waypoint folder not found", "tried", attempted, "elapsed", time.Since(start))
-	return fmt.Errorf("DJI Fly waypoint folder not found on any storage: %w", mtp.ErrNotFound)
+
+	c.locateMu.Lock()
+	c.kind = KindUnknown
+	c.locateMu.Unlock()
+	c.logger.Warn("MTP device is neither a controller nor a camera", "elapsed", time.Since(start))
+	return nil
+}
+
+// findIn returns the first entry whose name matches (case-insensitively)
+// from an already-fetched listing, or nil. The returned pointer aliases
+// the slice element; copy it if the slice may be reused.
+func findIn(entries []mtp.FileEntry, name string) *mtp.FileEntry {
+	for i := range entries {
+		if strings.EqualFold(entries[i].Name, name) {
+			return &entries[i]
+		}
+	}
+	return nil
 }
 
 // storagePriority ranks MTP storage names so the most likely place to
 // find the DJI Fly Android tree is tried first. Higher returns sort
-// earlier in locateWaypointDir's iteration.
+// earlier in classify's iteration.
 func storagePriority(name string) int {
 	lower := strings.ToLower(name)
 	switch {
@@ -226,6 +270,9 @@ func storagePriority(name string) int {
 func (c *mtpController) ListSlots() ([]Slot, error) {
 	if err := c.awaitLocate(); err != nil {
 		return nil, err
+	}
+	if c.waypointDir == nil {
+		return nil, fmt.Errorf("DJI Fly waypoint folder not found on device: %w", mtp.ErrNotFound)
 	}
 	entries, err := c.dev.ListDir(c.waypointDir)
 	if err != nil {
@@ -585,4 +632,218 @@ func bufferReader(r io.Reader) (io.Reader, int64, error) {
 		return nil, 0, err
 	}
 	return bytes.NewReader(data), int64(len(data)), nil
+}
+
+// --- MediaBrowser implementation -------------------------------------------
+
+// exifProbeBytes is how much of a photo's head we pull to extract the
+// embedded EXIF thumbnail. Camera EXIF thumbnails sit near the start of
+// the file, well within this window.
+const exifProbeBytes = 256 * 1024
+
+// mediaScanMaxDepth caps the DCIM tree recursion. Real camera layouts
+// are DCIM/<album>/<file> — two levels — so this is generous.
+const mediaScanMaxDepth = 8
+
+// ListMedia walks the camera's DCIM tree and returns every photo and
+// video, newest first. It rebuilds the controller's media index as a
+// side effect so later ReadMedia / ReadThumbnail / ReadVideoPreview
+// calls resolve object IDs without re-walking.
+func (c *mtpController) ListMedia() ([]MediaItem, error) {
+	if err := c.awaitLocate(); err != nil {
+		return nil, err
+	}
+	if c.kind != KindCamera || c.mediaRoot == nil {
+		return nil, ErrMediaUnavailable
+	}
+	c.mediaMu.Lock()
+	defer c.mediaMu.Unlock()
+	return c.scanMediaLocked()
+}
+
+// scanMediaLocked rebuilds the media index. Caller must hold mediaMu.
+func (c *mtpController) scanMediaLocked() ([]MediaItem, error) {
+	files, err := c.collectFiles(c.mediaRoot, 0)
+	if err != nil {
+		return nil, err
+	}
+	// Index .LRF proxy clips by parent + base name so each video can be
+	// paired with its low-res preview.
+	lrf := map[string]mtp.FileEntry{}
+	for _, f := range files {
+		if strings.EqualFold(path.Ext(f.Name), ".lrf") {
+			lrf[proxyKey(f.ParentID, f.Name)] = f
+		}
+	}
+	c.mediaByID = map[uint32]mtp.FileEntry{}
+	c.lrfByVideo = map[uint32]mtp.FileEntry{}
+	items := make([]MediaItem, 0, len(files))
+	for _, f := range files {
+		kind := mediaKind(f.Name)
+		if kind == "" {
+			continue // skip .lrf / .srt / json sidecars
+		}
+		c.mediaByID[f.ObjectID] = f
+		item := MediaItem{
+			ID:         strconv.FormatUint(uint64(f.ObjectID), 10),
+			Name:       f.Name,
+			Kind:       kind,
+			Size:       f.Size,
+			ModifiedAt: f.ModifiedAt,
+		}
+		if kind == "video" {
+			if proxy, ok := lrf[proxyKey(f.ParentID, f.Name)]; ok {
+				item.HasPreview = true
+				c.lrfByVideo[f.ObjectID] = proxy
+			}
+		}
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].ModifiedAt.After(items[j].ModifiedAt)
+	})
+	return items, nil
+}
+
+// collectFiles recursively gathers every non-folder entry under folder.
+func (c *mtpController) collectFiles(folder *mtp.FileEntry, depth int) ([]mtp.FileEntry, error) {
+	if depth > mediaScanMaxDepth {
+		return nil, nil
+	}
+	entries, err := c.dev.ListDir(folder)
+	if err != nil {
+		return nil, err
+	}
+	var out []mtp.FileEntry
+	for i := range entries {
+		e := entries[i]
+		if e.IsFolder {
+			sub, err := c.collectFiles(&e, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, sub...)
+			continue
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// ensureMediaIndex builds the media index if it hasn't been built yet.
+// ListMedia always rebuilds; the read paths use this so they still work
+// if called before any ListMedia (e.g. a direct API hit after restart).
+func (c *mtpController) ensureMediaIndex() error {
+	if err := c.awaitLocate(); err != nil {
+		return err
+	}
+	if c.kind != KindCamera || c.mediaRoot == nil {
+		return ErrMediaUnavailable
+	}
+	c.mediaMu.Lock()
+	defer c.mediaMu.Unlock()
+	if c.mediaByID != nil {
+		return nil
+	}
+	_, err := c.scanMediaLocked()
+	return err
+}
+
+// mediaEntry resolves a media object ID to its file entry.
+func (c *mtpController) mediaEntry(id string) (mtp.FileEntry, error) {
+	oid, err := parseObjectID(id)
+	if err != nil {
+		return mtp.FileEntry{}, err
+	}
+	if err := c.ensureMediaIndex(); err != nil {
+		return mtp.FileEntry{}, err
+	}
+	c.mediaMu.Lock()
+	defer c.mediaMu.Unlock()
+	e, ok := c.mediaByID[oid]
+	if !ok {
+		return mtp.FileEntry{}, ErrMediaNotFound
+	}
+	return e, nil
+}
+
+// ReadMedia streams the full original file for a media object into w
+// and returns its on-device filename.
+func (c *mtpController) ReadMedia(id string, w io.Writer) (string, error) {
+	e, err := c.mediaEntry(id)
+	if err != nil {
+		return "", err
+	}
+	return e.Name, c.dev.GetObjectTo(e.ObjectID, w)
+}
+
+// ReadVideoPreview streams a video's sibling .LRF proxy clip into w.
+// Returns ErrMediaNotFound if the video has no proxy.
+func (c *mtpController) ReadVideoPreview(id string, w io.Writer) (string, error) {
+	oid, err := parseObjectID(id)
+	if err != nil {
+		return "", err
+	}
+	if err := c.ensureMediaIndex(); err != nil {
+		return "", err
+	}
+	c.mediaMu.Lock()
+	proxy, ok := c.lrfByVideo[oid]
+	c.mediaMu.Unlock()
+	if !ok {
+		return "", ErrMediaNotFound
+	}
+	return proxy.Name, c.dev.GetObjectTo(proxy.ObjectID, w)
+}
+
+// ReadThumbnail returns a small JPEG preview for a media object. It
+// tries the device's own MTP thumbnail first; for photos with none it
+// falls back to the JPEG's embedded EXIF thumbnail, pulled from just the
+// head of the file. Returns ErrThumbnailNotFound when neither yields one.
+func (c *mtpController) ReadThumbnail(id string) ([]byte, error) {
+	e, err := c.mediaEntry(id)
+	if err != nil {
+		return nil, err
+	}
+	if thumb, terr := c.dev.GetThumbnail(e.ObjectID); terr == nil && len(thumb) > 0 {
+		return thumb, nil
+	}
+	if mediaKind(e.Name) == "photo" {
+		head, perr := c.dev.GetPartialObject(e.ObjectID, 0, exifProbeBytes)
+		if perr == nil {
+			if t := extractEXIFThumbnail(head); len(t) > 0 {
+				return t, nil
+			}
+		}
+	}
+	return nil, ErrThumbnailNotFound
+}
+
+// proxyKey identifies a video and its .LRF proxy as the same clip:
+// same parent folder, same base name (extension stripped).
+func proxyKey(parentID uint32, name string) string {
+	base := strings.TrimSuffix(name, path.Ext(name))
+	return strconv.FormatUint(uint64(parentID), 10) + "/" + strings.ToUpper(base)
+}
+
+// mediaKind classifies a filename as "photo", "video", or "" (not media).
+func mediaKind(name string) string {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".jpg", ".jpeg", ".dng", ".png", ".heic", ".heif", ".webp", ".tif", ".tiff", ".raw":
+		return "photo"
+	case ".mp4", ".mov", ".m4v", ".avi", ".mkv":
+		return "video"
+	default:
+		return ""
+	}
+}
+
+// parseObjectID parses a decimal MTP object ID. A malformed ID is
+// reported as ErrMediaNotFound — there is no such object either way.
+func parseObjectID(id string) (uint32, error) {
+	n, err := strconv.ParseUint(strings.TrimSpace(id), 10, 32)
+	if err != nil {
+		return 0, ErrMediaNotFound
+	}
+	return uint32(n), nil
 }

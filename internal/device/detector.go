@@ -32,6 +32,18 @@ var ErrPreviewNotFound = errors.New("preview not found")
 // ErrSlotNotFound is returned when the requested GUID doesn't exist on device.
 var ErrSlotNotFound = errors.New("slot not found")
 
+// ErrMediaUnavailable is returned when media browsing isn't possible for
+// a device: it isn't a camera/drone, or this build has no MTP support.
+var ErrMediaUnavailable = errors.New("media browsing unavailable for this device")
+
+// ErrMediaNotFound is returned when a requested media object ID isn't
+// present on the device.
+var ErrMediaNotFound = errors.New("media file not found")
+
+// ErrThumbnailNotFound is returned when no thumbnail can be produced for
+// a media object (no device thumbnail and no embedded EXIF thumbnail).
+var ErrThumbnailNotFound = errors.New("thumbnail not available")
+
 // Registry tracks all currently connected devices and routes API calls
 // to the correct Controller. It owns the ADB transport.
 type Registry struct {
@@ -168,9 +180,9 @@ func (r *Registry) Refresh(ctx context.Context) error {
 		// because that's what openMTP is keyed on.
 		seen := map[string]bool{}
 		for _, md := range mtpDevs {
-			if !isDJI(md) {
-				continue
-			}
+			// Every MTP device is accepted, not just DJI hardware: a
+			// camera/drone is browsed for media regardless of vendor.
+			// classify (in mtpController) sorts out controller vs camera.
 			usbID := md.Identifier
 			// Reuse an existing handle only if it's the same physical
 			// connection AND it still answers on the wire. The
@@ -433,6 +445,17 @@ type WaypointImageWriter interface {
 	WriteWaypointImages(guid string, images []WaypointImage) error
 }
 
+// MediaBrowser is implemented by controllers backing a camera/drone:
+// they enumerate and stream the device's photos and videos. Controllers
+// that aren't camera-kind devices simply don't implement it, and the
+// registry wrappers below report ErrMediaUnavailable.
+type MediaBrowser interface {
+	ListMedia() ([]MediaItem, error)
+	ReadMedia(id string, w io.Writer) (name string, err error)
+	ReadThumbnail(id string) ([]byte, error)
+	ReadVideoPreview(id string, w io.Writer) (name string, err error)
+}
+
 // PushWaypointImages pulls the slot's KMZ, renders a small satellite
 // tile per waypoint, and writes them all into the slot's image/
 // folder along with a regenerated ShotSnap.json index. Returns the
@@ -495,6 +518,65 @@ func (r *Registry) ReadKMZ(deviceID, guid string, w io.Writer) error {
 	return puller.ReadKMZ(guid, w)
 }
 
+// ListMedia refreshes the device set, then enumerates the photos and
+// videos on the given camera/drone. Returns ErrMediaUnavailable if the
+// device isn't a media-capable camera.
+func (r *Registry) ListMedia(ctx context.Context, deviceID string) ([]MediaItem, error) {
+	if err := r.Refresh(ctx); err != nil {
+		return nil, err
+	}
+	c, err := r.Lookup(deviceID)
+	if err != nil {
+		return nil, err
+	}
+	mb, ok := c.(MediaBrowser)
+	if !ok {
+		return nil, ErrMediaUnavailable
+	}
+	return mb.ListMedia()
+}
+
+// ReadMedia streams the full original media file into w and returns its
+// on-device filename. It does not Refresh — the device must already be
+// known (the UI always lists media before downloading).
+func (r *Registry) ReadMedia(deviceID, id string, w io.Writer) (string, error) {
+	c, err := r.Lookup(deviceID)
+	if err != nil {
+		return "", err
+	}
+	mb, ok := c.(MediaBrowser)
+	if !ok {
+		return "", ErrMediaUnavailable
+	}
+	return mb.ReadMedia(id, w)
+}
+
+// ReadMediaThumbnail returns a small JPEG preview for a media object.
+func (r *Registry) ReadMediaThumbnail(deviceID, id string) ([]byte, error) {
+	c, err := r.Lookup(deviceID)
+	if err != nil {
+		return nil, err
+	}
+	mb, ok := c.(MediaBrowser)
+	if !ok {
+		return nil, ErrMediaUnavailable
+	}
+	return mb.ReadThumbnail(id)
+}
+
+// ReadVideoPreview streams a video's low-res .LRF proxy clip into w.
+func (r *Registry) ReadVideoPreview(deviceID, id string, w io.Writer) (string, error) {
+	c, err := r.Lookup(deviceID)
+	if err != nil {
+		return "", err
+	}
+	mb, ok := c.(MediaBrowser)
+	if !ok {
+		return "", ErrMediaUnavailable
+	}
+	return mb.ReadVideoPreview(id, w)
+}
+
 // SetSlotName persists a user-assigned name for a slot.
 func (r *Registry) SetSlotName(deviceID, guid, name string) error {
 	if r.names == nil {
@@ -516,13 +598,6 @@ func (r *Registry) applySavedNames(deviceID string, slots []Slot) []Slot {
 		}
 	}
 	return slots
-}
-
-// isDJI filters MTP devices down to DJI hardware by USB vendor ID.
-// 0x2ca3 is DJI Technology Co., Ltd. Other vendors detected over MTP
-// (random Android phones, cameras) aren't useful for this app.
-func isDJI(d *mtp.Device) bool {
-	return d.Vendor == 0x2ca3
 }
 
 // List returns one Info per connected device.
@@ -676,9 +751,6 @@ func (r *Registry) pollMTPHotplug(ctx context.Context, out chan<- Event) {
 		}
 		curr := make(map[string]struct{}, len(devs))
 		for _, d := range devs {
-			if !isDJI(d) {
-				continue
-			}
 			curr[d.Identifier] = struct{}{}
 		}
 
@@ -869,6 +941,10 @@ func (c *adbController) Info() Info {
 		ConnectionType: ConnADB,
 		Authorized:     auth,
 		State:          state,
+		// ADB devices in this app are DJI controllers / phones running
+		// DJI Fly — always the slots/transfer flow, never the media
+		// gallery (media browsing is MTP-only).
+		Kind: KindController,
 	}
 	if auth {
 		info.DJIFlyDetected, _ = c.dev.HasDJIFly()

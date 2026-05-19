@@ -298,6 +298,13 @@ func equalFold(a, b string) bool { return strings.EqualFold(a, b) }
 // getFile streams an MTP object to w. libmtp's "_To_File" variant is
 // the simplest API; we spool to a temp file then copy out.
 func getFile(d *Device, entry *FileEntry, w io.Writer) error {
+	return getObjectTo(d, entry.ObjectID, w)
+}
+
+// getObjectTo is the object-ID-keyed core of getFile. libmtp's
+// Get_File_To_File needs a real on-disk destination, so we spool to a
+// temp file then copy out.
+func getObjectTo(d *Device, objectID uint32, w io.Writer) error {
 	if d.impl.dev == nil {
 		return errors.New("mtp: device not open")
 	}
@@ -311,9 +318,9 @@ func getFile(d *Device, entry *FileEntry, w io.Writer) error {
 
 	cPath := C.CString(tmpPath)
 	defer C.free(unsafe.Pointer(cPath))
-	if rc := C.LIBMTP_Get_File_To_File(d.impl.dev, C.uint32_t(entry.ObjectID), cPath, nil, nil); rc != 0 {
+	if rc := C.LIBMTP_Get_File_To_File(d.impl.dev, C.uint32_t(objectID), cPath, nil, nil); rc != 0 {
 		dumpLibmtpErrors(d.impl.dev)
-		return fmt.Errorf("mtp: Get_File_To_File(%d): rc=%d", entry.ObjectID, int(rc))
+		return fmt.Errorf("mtp: Get_File_To_File(%d): rc=%d", objectID, int(rc))
 	}
 	f, err := os.Open(tmpPath)
 	if err != nil {
@@ -322,6 +329,57 @@ func getFile(d *Device, entry *FileEntry, w io.Writer) error {
 	defer f.Close()
 	_, err = io.Copy(w, f)
 	return err
+}
+
+// getThumbnail asks the device for its stored thumbnail for an object.
+// Returns ErrNotFound when the device serves none (common for video
+// objects on some cameras). libmtp mallocs the buffer; we copy it into
+// Go memory and free the C side.
+func getThumbnail(d *Device, objectID uint32) ([]byte, error) {
+	if d.impl.dev == nil {
+		return nil, errors.New("mtp: device not open")
+	}
+	var data *C.uchar
+	var size C.uint
+	rc := C.LIBMTP_Get_Thumbnail(d.impl.dev, C.uint32_t(objectID), &data, &size)
+	if rc != 0 || data == nil || size == 0 {
+		if data != nil {
+			C.free(unsafe.Pointer(data))
+		}
+		C.LIBMTP_Clear_Errorstack(d.impl.dev)
+		return nil, ErrNotFound
+	}
+	out := C.GoBytes(unsafe.Pointer(data), C.int(size))
+	C.free(unsafe.Pointer(data))
+	return out, nil
+}
+
+// getPartialObject reads a byte range out of an object via PTP's
+// GetPartialObject. Not every device's stack supports it; on failure
+// we report ErrPartialUnsupported so callers can fall back.
+func getPartialObject(d *Device, objectID uint32, offset uint64, maxBytes uint32) ([]byte, error) {
+	if d.impl.dev == nil {
+		return nil, errors.New("mtp: device not open")
+	}
+	var data *C.uchar
+	var size C.uint
+	rc := C.LIBMTP_GetPartialObject(d.impl.dev, C.uint32_t(objectID), C.uint64_t(offset), C.uint32_t(maxBytes), &data, &size)
+	if rc != 0 {
+		if data != nil {
+			C.free(unsafe.Pointer(data))
+		}
+		C.LIBMTP_Clear_Errorstack(d.impl.dev)
+		return nil, ErrPartialUnsupported
+	}
+	if data == nil || size == 0 {
+		if data != nil {
+			C.free(unsafe.Pointer(data))
+		}
+		return nil, ErrNotFound
+	}
+	out := C.GoBytes(unsafe.Pointer(data), C.int(size))
+	C.free(unsafe.Pointer(data))
+	return out, nil
 }
 
 // putFile uploads r as a child of parent. libmtp's "_From_File" variant

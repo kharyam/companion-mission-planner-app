@@ -13,6 +13,16 @@ const (
 	ConnMTP ConnectionType = "mtp"
 )
 
+// Device kinds. A connected device is classified by inspecting its
+// storage layout: a DJI Fly waypoint tree marks a controller; a DCIM
+// folder marks a camera/drone. "unknown" covers anything else (and is
+// the value reported until the background classification walk lands).
+const (
+	KindController = "controller"
+	KindCamera     = "camera"
+	KindUnknown    = "unknown"
+)
+
 // Info is the device summary returned to KAM.
 type Info struct {
 	ID             string         `json:"id"`
@@ -21,7 +31,11 @@ type Info struct {
 	Authorized     bool           `json:"authorized"`
 	State          string         `json:"state"` // "online" | "offline" | "unauthorized" | "unknown"
 	DJIFlyDetected bool           `json:"djiFlyDetected"`
-	Hint           string         `json:"hint,omitempty"` // human-readable next step for KAM to display
+	// Kind is "controller", "camera", or "unknown". The UI keys off it:
+	// a controller shows the slots/transfer flow, a camera shows the
+	// media gallery.
+	Kind string `json:"kind"`
+	Hint string `json:"hint,omitempty"` // human-readable next step for KAM to display
 }
 
 // Slot is a single waypoint slot on a device.
@@ -37,6 +51,22 @@ type Slot struct {
 	// operations (regen all, push all wp images) skip it. Download
 	// stays enabled regardless.
 	Managed bool `json:"managed"`
+}
+
+// MediaItem is one photo or video discovered on a camera/drone.
+type MediaItem struct {
+	ID         string    `json:"id"`   // decimal MTP object ID
+	Name       string    `json:"name"` // on-device filename
+	Kind       string    `json:"kind"` // "photo" | "video"
+	Size       int64     `json:"size"`
+	ModifiedAt time.Time `json:"modifiedAt"`
+	// HasPreview is true for videos that ship a sibling .LRF proxy —
+	// the low-res clip DJI Fly plays for smooth scrubbing.
+	HasPreview bool `json:"hasPreview"`
+	// URLs are filled in by the API layer before the item is returned.
+	ThumbnailURL string `json:"thumbnailUrl,omitempty"`
+	PreviewURL   string `json:"previewUrl,omitempty"`
+	DownloadURL  string `json:"downloadUrl,omitempty"`
 }
 
 // TransferResult is returned after a successful KMZ push.

@@ -194,24 +194,47 @@ async function loadDevices() {
         ? `<span class="badge ok">${d.state || 'online'}</span>`
         : `<span class="badge warn">${d.state || 'pending'}</span>`;
       const transportBadge = `<span class="badge ${d.connectionType}">${(d.connectionType || '').toUpperCase()}</span>`;
-      const djiBadge = d.djiFlyDetected
-        ? `<span class="badge ok">DJI Fly</span>`
-        : `<span class="badge bad">no DJI Fly</span>`;
+      // The kind badge tells the user what they'll get on click: a
+      // controller opens the slots/transfer flow, a camera/drone opens
+      // the media gallery. Until classification lands, kind is unknown.
+      let kindBadge;
+      if (d.kind === 'camera') {
+        kindBadge = `<span class="badge ok">Camera</span>`;
+      } else if (d.kind === 'controller') {
+        kindBadge = d.djiFlyDetected
+          ? `<span class="badge ok">DJI Fly</span>`
+          : `<span class="badge bad">no DJI Fly</span>`;
+      } else {
+        kindBadge = `<span class="badge warn">identifying…</span>`;
+      }
       li.innerHTML = `
         <div>
-          <div class="dev-name">${escapeHTML(d.model || 'DJI device')}</div>
+          <div class="dev-name">${escapeHTML(d.model || 'MTP device')}</div>
           <div class="dev-id">${escapeHTML(d.id)}</div>
           ${d.hint ? `<div class="dev-meta dim">${escapeHTML(d.hint)}</div>` : ''}
         </div>
         <div class="dev-meta">
           ${transportBadge}
           ${stateBadge}
-          ${djiBadge}
+          ${kindBadge}
         </div>
       `;
       li.addEventListener('click', () => selectDevice(d));
       if (state.selectedDevice?.id === d.id) li.classList.add('selected');
       list.appendChild(li);
+    }
+    // Re-sync the open panel with fresh device data. This is what makes
+    // the "identifying…" → controller/camera transition seamless: when
+    // background classification finishes the server emits device.refreshed,
+    // the WebSocket handler re-runs loadDevices, and a changed kind
+    // re-opens the correct panel without the user clicking again.
+    if (state.selectedDevice) {
+      const fresh = devices.find(d => d.id === state.selectedDevice.id);
+      if (fresh && fresh.kind !== state.selectedDevice.kind) {
+        selectDevice(fresh);
+      } else if (fresh) {
+        state.selectedDevice = fresh;
+      }
     }
   } catch (e) {
     list.innerHTML = '';
@@ -225,6 +248,17 @@ async function selectDevice(d) {
   state.selectedDevice = d;
   state.selectedSlot = null;
   for (const li of $('device-list').children) li.classList.toggle('selected', li.dataset.id === d.id);
+  if (d.kind === 'camera') {
+    // Camera/drone: media gallery instead of the slots/transfer flow.
+    $('slots-panel').classList.add('hidden');
+    $('transfer-panel').classList.add('hidden');
+    $('media-panel').classList.remove('hidden');
+    $('media-device-name').textContent = `on ${d.model || d.id}`;
+    await loadMedia();
+    return;
+  }
+  // Controller (or still-unknown): slots + transfer flow.
+  $('media-panel').classList.add('hidden');
   $('slots-panel').classList.remove('hidden');
   $('transfer-panel').classList.add('hidden');
   $('slots-device-name').textContent = `on ${d.model || d.id}`;
@@ -333,6 +367,158 @@ async function loadSlots() {
   } finally {
     $('slots-panel').classList.remove('loading');
   }
+}
+
+// ---------- media (camera / drone) ----------
+
+async function loadMedia() {
+  if (!state.selectedDevice) return;
+  const grid = $('media-grid');
+  $('media-panel').classList.add('loading');
+  grid.innerHTML = '<div class="media-placeholder loading">Scanning camera storage…</div>';
+  try {
+    const { items } = await api(`/api/devices/${encodeURIComponent(state.selectedDevice.id)}/media`);
+    grid.innerHTML = '';
+    if (!items?.length) {
+      grid.innerHTML = '<div class="media-placeholder">no photos or videos found on this device</div>';
+      return;
+    }
+    for (const m of items) grid.appendChild(renderMediaTile(m));
+  } catch (e) {
+    grid.innerHTML = '';
+    toast('bad', 'Could not list media', e.message || e.code);
+  } finally {
+    $('media-panel').classList.remove('loading');
+  }
+}
+
+function renderMediaTile(m) {
+  const isVideo = m.kind === 'video';
+  const tile = document.createElement('div');
+  tile.className = 'media-tile';
+  tile.dataset.id = m.id;
+
+  const thumb = document.createElement('div');
+  thumb.className = 'media-thumb';
+  const img = document.createElement('img');
+  img.loading = 'lazy';
+  img.alt = m.name;
+  img.src = withAuthURL(m.thumbnailUrl);
+  // A 404 here is expected when the device serves no thumbnail — fall
+  // back to an icon glyph rather than a broken-image box.
+  img.addEventListener('error', () => {
+    img.remove();
+    const icon = document.createElement('span');
+    icon.className = 'media-thumb-icon';
+    icon.textContent = isVideo ? '🎬' : '🖼';
+    thumb.prepend(icon);
+  });
+  thumb.appendChild(img);
+  if (isVideo) {
+    const play = document.createElement('span');
+    play.className = 'media-play';
+    play.textContent = '▶';
+    thumb.appendChild(play);
+  }
+
+  const info = document.createElement('div');
+  info.className = 'media-info';
+  info.innerHTML = `
+    <div class="media-name"></div>
+    <div class="media-meta">
+      <span class="badge ${isVideo ? 'mtp' : 'ok'}">${isVideo ? 'Video' : 'Photo'}</span>
+      <span>${bytesHuman(m.size)}</span>
+      <span>${timeHuman(m.modifiedAt)}</span>
+    </div>
+  `;
+  const nameEl = info.querySelector('.media-name');
+  nameEl.textContent = m.name;
+  nameEl.title = m.name;
+
+  const dl = document.createElement('button');
+  dl.type = 'button';
+  dl.className = 'rename-btn media-download';
+  dl.title = 'Download original';
+  dl.textContent = '⤓';
+  dl.addEventListener('click', (e) => { e.stopPropagation(); downloadMedia(m); });
+
+  tile.append(thumb, info, dl);
+  tile.addEventListener('click', () => openMediaLightbox(m));
+  return tile;
+}
+
+// downloadMedia triggers a browser save of the full original file. The
+// on-device name rides in ?name= so the server's Content-Disposition
+// keeps the original filename; the token rides in the query because an
+// anchor can't carry custom headers.
+function downloadMedia(m) {
+  const a = document.createElement('a');
+  a.href = withAuthURL(`${m.downloadUrl}?name=${encodeURIComponent(m.name)}`);
+  a.download = m.name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => a.remove(), 0);
+}
+
+// openMediaLightbox shows the item full-size: a photo as its original
+// image, a video via its low-res .LRF proxy in an HTML5 player (the same
+// proxy DJI Fly plays for smooth scrubbing). The full original is always
+// one click away via "Download original".
+function openMediaLightbox(m) {
+  const isVideo = m.kind === 'video';
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop lightbox-backdrop';
+
+  let stage;
+  if (isVideo && m.previewUrl) {
+    stage = document.createElement('video');
+    stage.src = withAuthURL(m.previewUrl);
+    stage.controls = true;
+    stage.autoplay = true;
+    stage.className = 'lightbox-media';
+  } else if (isVideo) {
+    stage = document.createElement('div');
+    stage.className = 'lightbox-fallback';
+    stage.textContent = 'No preview proxy on device — download the original to view.';
+  } else {
+    stage = document.createElement('img');
+    stage.src = withAuthURL(m.downloadUrl);
+    stage.alt = m.name;
+    stage.className = 'lightbox-media';
+    stage.addEventListener('error', () => {
+      const fb = document.createElement('div');
+      fb.className = 'lightbox-fallback';
+      fb.textContent = 'This format can’t be shown in the browser — download the original to view.';
+      stage.replaceWith(fb);
+    });
+  }
+
+  const box = document.createElement('div');
+  box.className = 'lightbox';
+  box.innerHTML = `
+    <div class="lightbox-head">
+      <span class="lightbox-name"></span>
+      <div class="lightbox-actions">
+        <button type="button" class="ghost lb-download">⤓ Download original</button>
+        <button type="button" class="ghost lb-close">Close</button>
+      </div>
+    </div>
+  `;
+  box.querySelector('.lightbox-name').textContent = m.name;
+  box.appendChild(stage);
+  backdrop.appendChild(box);
+  document.body.appendChild(backdrop);
+
+  const close = () => {
+    if (stage.tagName === 'VIDEO') { try { stage.pause(); } catch {} }
+    backdrop.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  box.querySelector('.lb-close').addEventListener('click', close);
+  box.querySelector('.lb-download').addEventListener('click', () => downloadMedia(m));
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  document.addEventListener('keydown', onKey);
 }
 
 // ---------- working modal ----------
@@ -967,6 +1153,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('transfer-form').addEventListener('submit', submitTransfer);
   $('refresh-devices').addEventListener('click', loadDevices);
   $('refresh-slots').addEventListener('click', loadSlots);
+  $('refresh-media').addEventListener('click', loadMedia);
 
   $('batch-regen-previews').addEventListener('click', batchRegenerateAllPreviews);
   $('batch-push-wp').addEventListener('click', batchPushAllWaypointImages);

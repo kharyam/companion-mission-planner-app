@@ -33,6 +33,11 @@ var ErrUnavailable = errors.New("MTP transport unavailable in this build")
 // device. Callers translate this into the SLOT_NOT_FOUND API error.
 var ErrNotFound = errors.New("mtp: path not found")
 
+// ErrPartialUnsupported is returned by GetPartialObject when the
+// device's PTP stack can't serve partial-object reads. Callers should
+// fall back gracefully (e.g. skip the EXIF-thumbnail shortcut).
+var ErrPartialUnsupported = errors.New("mtp: device does not support partial object reads")
+
 // Device is the public handle on an open MTP device. The concrete type
 // lives in the platform-specific file; this header just lets callers
 // keep an opaque reference.
@@ -135,6 +140,34 @@ func (d *Device) GetFile(entry *FileEntry, w io.Writer) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return getFile(d, entry, w)
+}
+
+// GetObjectTo streams the MTP object with the given ID into w. Unlike
+// GetFile it needs only the object ID, not a full FileEntry — handy for
+// the media browser, whose download URLs carry just the ID.
+func (d *Device) GetObjectTo(objectID uint32, w io.Writer) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return getObjectTo(d, objectID, w)
+}
+
+// GetThumbnail returns the device-stored thumbnail (typically JPEG) for
+// an object, or ErrNotFound if the device serves none. This is the
+// cheap path: no full-file transfer.
+func (d *Device) GetThumbnail(objectID uint32) ([]byte, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return getThumbnail(d, objectID)
+}
+
+// GetPartialObject reads up to maxBytes starting at offset from an
+// object. Used to pull just the head of a JPEG so its embedded EXIF
+// thumbnail can be extracted without downloading the whole photo.
+// Returns ErrPartialUnsupported when the device can't do partial reads.
+func (d *Device) GetPartialObject(objectID uint32, offset uint64, maxBytes uint32) ([]byte, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return getPartialObject(d, objectID, offset, maxBytes)
 }
 
 // PutFile uploads r as a child of parent with the given name and size.
