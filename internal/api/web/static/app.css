@@ -115,6 +115,69 @@ button {
   margin-left: 8px;
 }
 
+/* ----- battery ----- */
+
+.battery {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+  color: var(--text-dim);
+}
+
+.battery.hidden { display: none; }
+
+.batt-icon {
+  position: relative;
+  width: 22px;
+  height: 11px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  padding: 1px;
+  box-sizing: border-box;
+}
+
+/* Terminal nub on the right edge. */
+.batt-icon::after {
+  content: "";
+  position: absolute;
+  right: -3px;
+  top: 3px;
+  width: 2px;
+  height: 5px;
+  background: currentColor;
+  border-radius: 0 1px 1px 0;
+}
+
+.batt-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--good);
+  transition: width 300ms ease, background 200ms ease;
+}
+
+.battery.batt-warn .batt-fill { background: var(--warn); }
+.battery.batt-low  .batt-fill { background: var(--bad); }
+.battery.batt-low  { color: var(--bad); }
+
+.batt-bolt {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text);
+  text-shadow: 0 0 2px #000;
+  pointer-events: none;
+}
+.batt-bolt[hidden] { display: none; }
+
+.batt-pct {
+  font-variant-numeric: tabular-nums;
+}
+
 /* ----- main + panels ----- */
 
 main {

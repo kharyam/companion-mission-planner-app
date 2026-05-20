@@ -168,10 +168,31 @@ async function pollHealth() {
     $('health-dot').className = 'dot ok';
     $('health-label').textContent = 'online';
     $('version-label').textContent = h.version || '';
+    renderBattery(h.battery);
   } catch (e) {
     $('health-dot').className = 'dot bad';
     $('health-label').textContent = 'offline';
+    renderBattery(null);
   }
+}
+
+// renderBattery shows or hides the topbar battery widget based on the
+// /api/health response. The widget appears only when the server has a
+// PiSugar reading; on desktop/dev hosts the field is absent and the
+// widget stays hidden.
+function renderBattery(b) {
+  const el = $('battery');
+  if (!b) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  const pct = Math.max(0, Math.min(100, Math.round(b.percent ?? 0)));
+  $('batt-fill').style.width = pct + '%';
+  el.classList.toggle('batt-low', pct <= 15);
+  el.classList.toggle('batt-warn', pct > 15 && pct <= 35);
+  $('batt-pct').textContent = pct + '%';
+  $('batt-bolt').hidden = !b.externalPower;
+  const volts = (typeof b.volts === 'number') ? b.volts.toFixed(2) + 'V' : '';
+  const src = b.externalPower ? 'external power' : 'on battery';
+  el.title = ['Battery', pct + '%', volts, src].filter(Boolean).join(' · ');
 }
 
 // ---------- devices ----------
