@@ -24,8 +24,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi
+User=kmendez
+WorkingDirectory=/home/kmendez
 ExecStart=/usr/local/bin/kam-transfer serve
 Restart=on-failure
 RestartSec=5
