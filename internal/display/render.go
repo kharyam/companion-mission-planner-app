@@ -262,15 +262,18 @@ func renderSystem(s Snapshot) *image.RGBA {
 		}
 		battLine = fmt.Sprintf("%d%%   %.2fV   %s", clampPct(s.Battery.Percent), s.Battery.Volts, src)
 	}
-	rows := [][2]string{
-		{"Address", s.URL},
-		{"Network", ifEmpty(s.Net.IP, "—") + "  " + ifEmpty(s.Net.Iface, "")},
-		{"Controller", controllerPill(s.Controller).text},
-		{"Battery", battLine},
-		{"Version", s.Version},
-		{"Uptime", humanDuration(s.Uptime)},
-		{"CPU temp", fmt.Sprintf("%.1f °C", s.CPUTempC)},
+	rows := [][2]string{{"Address", s.URL}}
+	if s.Tailscale.Up {
+		rows = append(rows, [2]string{"Tailscale", s.Tailscale.IP + "  " + ifEmpty(s.Tailscale.Iface, "")})
 	}
+	rows = append(rows,
+		[2]string{"Network", ifEmpty(s.Net.IP, "—") + "  " + ifEmpty(s.Net.Iface, "")},
+		[2]string{"Controller", controllerPill(s.Controller).text},
+		[2]string{"Battery", battLine},
+		[2]string{"Version", s.Version},
+		[2]string{"Uptime", humanDuration(s.Uptime)},
+		[2]string{"CPU temp", fmt.Sprintf("%.1f °C", s.CPUTempC)},
+	)
 	y := 58.0
 	for _, row := range rows {
 		setCol(dc, colMuted)

@@ -225,10 +225,11 @@ func (c *Controller) refreshInterval() time.Duration {
 
 // Snapshot is the rendered state of the daemon at one instant.
 type Snapshot struct {
-	URL          string
+	URL          string // headline URL — prefers Tailscale when present
 	Version      string
 	Battery      BatteryStatus
 	Net          NetStatus
+	Tailscale    TailscaleInfo
 	Controller   ControllerStatus
 	Transferring bool
 	CPUTempC     float64
@@ -264,7 +265,8 @@ func (c *Controller) snapshot() Snapshot {
 		Now:          time.Now(),
 	}
 	s.Net = readNet()
-	s.URL = c.serverURL(s.Net)
+	s.Tailscale = readTailscale()
+	s.URL = c.serverURL(s.Net, s.Tailscale)
 	s.Controller = controllerStatus(c.registry.Snapshot())
 	if b := c.latestBattery.Load(); b != nil {
 		s.Battery = *b
@@ -345,12 +347,19 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 }
 
 // serverURL is the address an operator should point the KAM web UI at.
-func (c *Controller) serverURL(n NetStatus) string {
+// On a wildcard bind we prefer the Tailscale IP when one is up — it's
+// routable from anywhere on the operator's tailnet and stable across
+// Wi-Fi networks — and fall back to the LAN IP otherwise.
+func (c *Controller) serverURL(n NetStatus, ts TailscaleInfo) string {
 	host := c.bind
 	switch c.bind {
 	case "", "0.0.0.0", "::":
-		// Wildcard bind: the LAN IP is the reachable one.
-		host = n.IP
+		switch {
+		case ts.Up && ts.IP != "":
+			host = ts.IP
+		default:
+			host = n.IP
+		}
 	}
 	if host == "" {
 		host = "127.0.0.1"
