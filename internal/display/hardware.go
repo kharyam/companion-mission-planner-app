@@ -83,6 +83,6 @@ const (
 	PageSystem               // network + system detail
 	pageCount
 
-	// pageQR is an ephemeral overlay (button Y), not part of the cycle.
-	pageQR Page = -1
+	// PageQR is an ephemeral overlay (button Y), not part of the cycle.
+	PageQR Page = -1
 )

@@ -2,7 +2,9 @@ package display
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"image"
 	"log/slog"
 	"net"
 	"os"
@@ -16,6 +18,10 @@ import (
 	"github.com/kamdynamics/kam-transfer/internal/device"
 	"github.com/kamdynamics/kam-transfer/internal/version"
 )
+
+// ErrShutdownDisabled is returned by Shutdown when the config option
+// display.allowShutdown is not set.
+var ErrShutdownDisabled = errors.New("display: allowShutdown is not enabled in config")
 
 // longPressThreshold is how long button Y must be held to count as a
 // long press (the safe-shutdown gesture).
@@ -160,7 +166,7 @@ func (c *Controller) loop(ctx context.Context, hw panel) {
 			}
 			switch be.Button {
 			case ButtonA:
-				if page == pageQR {
+				if page == PageQR {
 					page = PageStatus
 				} else {
 					page = (page + 1) % pageCount
@@ -184,10 +190,10 @@ func (c *Controller) loop(ctx context.Context, hw panel) {
 					c.shutdown(hw)
 					return
 				}
-				if page == pageQR {
+				if page == PageQR {
 					page = PageStatus
 				} else {
-					page = pageQR
+					page = PageQR
 				}
 			}
 			draw()
@@ -271,6 +277,59 @@ func (c *Controller) snapshot() Snapshot {
 // Safe to call from any goroutine.
 func (c *Controller) Battery() *BatteryStatus {
 	return c.latestBattery.Load()
+}
+
+// SystemInfo is a minimal slice of host telemetry the screen-render
+// loop already gathers. Exposed for the HTTP API.
+type SystemInfo struct {
+	Version  string
+	Uptime   time.Duration
+	CPUTempC float64
+	Net      NetStatus
+}
+
+// System returns a fresh telemetry snapshot. Safe to call from any
+// goroutine.
+func (c *Controller) System() SystemInfo {
+	return SystemInfo{
+		Version:  version.Version,
+		Uptime:   time.Since(c.started),
+		CPUTempC: cpuTemp(),
+		Net:      readNet(),
+	}
+}
+
+// RenderPage produces a 320×240 RGBA image of the named display page,
+// using a fresh snapshot. Used by the web UI's screen mirror so an
+// operator can preview what the front panel would show without
+// physical access to the device.
+func (c *Controller) RenderPage(page Page) image.Image {
+	return render(c.snapshot(), page)
+}
+
+// ShutdownAllowed reports whether the display.allowShutdown gate is
+// open. The UI uses this to surface (or hide) the remote-shutdown
+// affordance.
+func (c *Controller) ShutdownAllowed() bool {
+	return c.cfg.AllowShutdown
+}
+
+// Shutdown runs the same `sudo systemctl poweroff` the front-panel
+// button-Y long-press uses, but driven from the HTTP API. Gated by
+// display.allowShutdown; the service user still needs the NOPASSWD
+// sudoers rule documented in docs/INSTALLATION.md.
+func (c *Controller) Shutdown(ctx context.Context) error {
+	if !c.cfg.AllowShutdown {
+		return ErrShutdownDisabled
+	}
+	c.logger.Warn("safe shutdown requested via API")
+	cmd := exec.CommandContext(ctx, "sudo", "-n", "systemctl", "poweroff")
+	if err := cmd.Run(); err != nil {
+		c.logger.Error("shutdown command failed", "err", err,
+			"hint", "allowShutdown needs a NOPASSWD sudoers rule for `systemctl poweroff`")
+		return fmt.Errorf("systemctl poweroff: %w", err)
+	}
+	return nil
 }
 
 // serverURL is the address an operator should point the KAM web UI at.

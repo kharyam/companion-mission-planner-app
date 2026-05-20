@@ -41,7 +41,7 @@ func uniform(img *image.RGBA) bool {
 
 func TestRenderPages(t *testing.T) {
 	s := sampleSnapshot()
-	for _, page := range []Page{PageStatus, PageTransfer, PageSystem, pageQR} {
+	for _, page := range []Page{PageStatus, PageTransfer, PageSystem, PageQR} {
 		img := render(s, page)
 		if img == nil {
 			t.Fatalf("render(page %d) returned nil", page)
