@@ -4,7 +4,6 @@ package display
 
 import (
 	"fmt"
-	"log/slog"
 
 	"periph.io/x/host/v3"
 
@@ -12,26 +11,17 @@ import (
 )
 
 // detectHardware brings up periph.io and probes for the Display HAT
-// Mini and a PiSugar 3. The HAT (panel) is mandatory — without a screen
-// there is nothing to drive, so a missing HAT returns an error and the
-// status display stays off. The PiSugar is optional: when absent, the
-// returned battery is nil and the screen simply omits the battery
-// widget.
-func detectHardware(cfg config.DisplayConfig, logger *slog.Logger) (panel, battery, error) {
+// Mini. The HAT is mandatory for the screen — without it there is
+// nothing to draw on, so the status display stays off. PiSugar probing
+// lives in openPiSugar and runs independently (see RunBattery) so the
+// API surfaces battery state on Pis that have the UPS but no screen.
+func detectHardware(cfg config.DisplayConfig) (panel, error) {
 	if _, err := host.Init(); err != nil {
-		return nil, nil, fmt.Errorf("periph host init: %w", err)
+		return nil, fmt.Errorf("periph host init: %w", err)
 	}
-
 	hat, err := openHAT(cfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("display HAT unavailable: %w", err)
+		return nil, fmt.Errorf("display HAT unavailable: %w", err)
 	}
-
-	var batt battery
-	if ps, err := openPiSugar(); err != nil {
-		logger.Debug("no PiSugar battery detected", "err", err)
-	} else {
-		batt = ps
-	}
-	return hat, batt, nil
+	return hat, nil
 }

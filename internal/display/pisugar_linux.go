@@ -15,7 +15,7 @@ type piSugar struct {
 	dev *i2c.Dev
 }
 
-func openPiSugar() (*piSugar, error) {
+func openPiSugar() (battery, error) {
 	bus, err := i2creg.Open("1")
 	if err != nil {
 		return nil, fmt.Errorf("open I2C bus 1: %w", err)

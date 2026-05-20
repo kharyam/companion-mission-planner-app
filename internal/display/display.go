@@ -56,26 +56,64 @@ func New(cfg *config.Config, reg *device.Registry, transferBusy func() bool, log
 // Run drives the status screen until ctx is cancelled. It is meant to
 // be launched as a goroutine. When the hardware is absent (a bare Pi or
 // a desktop) it logs once and returns; the daemon is unaffected.
+//
+// Battery polling is independent (see RunBattery) — the screen reads
+// whatever the poller has cached.
 func (c *Controller) Run(ctx context.Context) {
 	if c.cfg.Enabled != nil && !*c.cfg.Enabled {
 		c.logger.Debug("status display disabled by config")
 		return
 	}
-	hw, batt, err := detectHardware(c.cfg, c.logger)
+	hw, err := detectHardware(c.cfg)
 	if err != nil {
 		c.logger.Info("status display inactive", "reason", err)
 		return
 	}
 	defer hw.Close()
-	if batt != nil {
-		defer batt.close()
+	c.logger.Info("status display active")
+	c.loop(ctx, hw)
+}
+
+// RunBattery probes for a PiSugar 3 UPS and, when present, polls it for
+// as long as ctx is alive. The latest reading is exposed via Battery().
+// This runs independently of the front-panel display so the HTTP API
+// surfaces battery state on Pis that have the UPS but not the screen.
+func (c *Controller) RunBattery(ctx context.Context) {
+	if c.cfg.Enabled != nil && !*c.cfg.Enabled {
+		return
 	}
-	c.logger.Info("status display active", "battery", batt != nil)
-	c.loop(ctx, hw, batt)
+	batt, err := openPiSugar()
+	if err != nil {
+		c.logger.Info("battery monitor inactive", "reason", err)
+		return
+	}
+	defer batt.close()
+	c.logger.Info("battery monitor active")
+
+	poll := func() {
+		if bs, err := batt.read(); err == nil {
+			snap := bs
+			c.latestBattery.Store(&snap)
+		} else {
+			c.logger.Debug("battery read failed", "err", err)
+		}
+	}
+	poll()
+
+	ticker := time.NewTicker(c.refreshInterval())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			poll()
+		}
+	}
 }
 
 // loop is the redraw/input loop. It runs only once hardware is confirmed.
-func (c *Controller) loop(ctx context.Context, hw panel, batt battery) {
+func (c *Controller) loop(ctx context.Context, hw panel) {
 	page := PageStatus
 	backlightOn := true
 	_ = hw.SetBacklight(c.cfg.Brightness)
@@ -86,7 +124,7 @@ func (c *Controller) loop(ctx context.Context, hw panel, batt battery) {
 	buttons := hw.Buttons()
 
 	draw := func() {
-		snap := c.snapshot(batt)
+		snap := c.snapshot()
 		var img = render(snap, page)
 		if err := hw.Blit(img); err != nil {
 			c.logger.Warn("screen blit failed", "err", err)
@@ -209,8 +247,9 @@ type ControllerStatus struct {
 	State     string // "online" | "offline" | "unauthorized" | ...
 }
 
-// snapshot gathers all live data the screen renders.
-func (c *Controller) snapshot(batt battery) Snapshot {
+// snapshot gathers all live data the screen renders. Battery state
+// comes from whatever the RunBattery poller has cached.
+func (c *Controller) snapshot() Snapshot {
 	s := Snapshot{
 		Version:      version.Version,
 		Transferring: c.transferBusy(),
@@ -221,20 +260,14 @@ func (c *Controller) snapshot(batt battery) Snapshot {
 	s.Net = readNet()
 	s.URL = c.serverURL(s.Net)
 	s.Controller = controllerStatus(c.registry.Snapshot())
-	if batt != nil {
-		if bs, err := batt.read(); err == nil {
-			s.Battery = bs
-			snap := bs
-			c.latestBattery.Store(&snap)
-		} else {
-			c.logger.Debug("battery read failed", "err", err)
-		}
+	if b := c.latestBattery.Load(); b != nil {
+		s.Battery = *b
 	}
 	return s
 }
 
-// Battery returns the most recent PiSugar reading the status-screen
-// goroutine took, or nil if no battery hardware was ever detected.
+// Battery returns the most recent PiSugar reading taken by the
+// RunBattery poller, or nil if no battery hardware was detected.
 // Safe to call from any goroutine.
 func (c *Controller) Battery() *BatteryStatus {
 	return c.latestBattery.Load()
