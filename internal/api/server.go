@@ -104,6 +104,9 @@ func (s *Server) Run(ctx context.Context) error {
 	// Drive the optional Raspberry Pi front-panel status screen. A
 	// no-op (returns immediately) when the Display HAT is not present.
 	go s.display.Run(ctx)
+	// Poll the optional PiSugar UPS independently — the screen is not
+	// required for /api/health to surface battery state.
+	go s.display.RunBattery(ctx)
 
 	errCh := make(chan error, 1)
 	go func() {
