@@ -1,8 +1,11 @@
 package display
 
 import (
+	"bytes"
+	_ "embed"
 	"fmt"
 	"image"
+	"image/png"
 	"strings"
 	"time"
 
@@ -12,6 +15,19 @@ import (
 	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/goregular"
 )
+
+//go:embed assets/kam-logo.png
+var kamLogoPNG []byte
+
+var kamLogo = mustDecodePNG(kamLogoPNG)
+
+func mustDecodePNG(b []byte) image.Image {
+	img, err := png.Decode(bytes.NewReader(b))
+	if err != nil {
+		panic("display: decode embedded logo: " + err.Error())
+	}
+	return img
+}
 
 // Palette — a calm dark theme tuned for the IPS panel's high contrast.
 type rgb struct{ r, g, b int }
@@ -70,16 +86,20 @@ func render(s Snapshot, page Page) *image.RGBA {
 	}
 }
 
-// header draws the top accent bar with a title and battery widget.
+// header draws the top accent bar with the KAM logo, a title and the
+// battery widget.
 func header(dc *gg.Context, title string, s Snapshot) {
 	const h = 34
 	setCol(dc, colAccent)
 	dc.DrawRectangle(0, 0, ScreenW, h)
 	dc.Fill()
 
+	logoW := kamLogo.Bounds().Dx()
+	dc.DrawImage(kamLogo, 6, (h-kamLogo.Bounds().Dy())/2)
+
 	setCol(dc, colWhite)
 	setFace(dc, fontBold, 14)
-	dc.DrawStringAnchored(title, 12, h/2, 0, 0.5)
+	dc.DrawStringAnchored(title, float64(6+logoW+10), h/2, 0, 0.5)
 
 	drawBattery(dc, ScreenW-12, h/2, s.Battery)
 }
@@ -158,7 +178,7 @@ func renderStatus(s Snapshot) *image.RGBA {
 	img, dc := newCanvas()
 	setCol(dc, colBG)
 	dc.Clear()
-	header(dc, "KAM TRANSFER", s)
+	header(dc, "STATUS", s)
 
 	// Headline: where to point the KAM planner.
 	setCol(dc, colMuted)
