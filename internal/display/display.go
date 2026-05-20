@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/kamdynamics/kam-transfer/internal/config"
@@ -31,6 +32,11 @@ type Controller struct {
 	transferBusy func() bool
 	logger       *slog.Logger
 	started      time.Time
+
+	// latestBattery holds the most recent successful PiSugar reading so
+	// the HTTP API can surface it without taking on its own I2C polling.
+	// nil while no PiSugar has been detected (or before the first read).
+	latestBattery atomic.Pointer[BatteryStatus]
 }
 
 // New builds a Controller. It touches no hardware — detection happens
@@ -218,11 +224,20 @@ func (c *Controller) snapshot(batt battery) Snapshot {
 	if batt != nil {
 		if bs, err := batt.read(); err == nil {
 			s.Battery = bs
+			snap := bs
+			c.latestBattery.Store(&snap)
 		} else {
 			c.logger.Debug("battery read failed", "err", err)
 		}
 	}
 	return s
+}
+
+// Battery returns the most recent PiSugar reading the status-screen
+// goroutine took, or nil if no battery hardware was ever detected.
+// Safe to call from any goroutine.
+func (c *Controller) Battery() *BatteryStatus {
+	return c.latestBattery.Load()
 }
 
 // serverURL is the address an operator should point the KAM web UI at.

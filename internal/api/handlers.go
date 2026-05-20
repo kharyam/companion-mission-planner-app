@@ -15,11 +15,19 @@ import (
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"status":  "ok",
 		"version": version.Version,
 		"time":    time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	if b := s.display.Battery(); b != nil && b.Present {
+		resp["battery"] = map[string]any{
+			"percent":       b.Percent,
+			"volts":         b.Volts,
+			"externalPower": b.ExternalPower,
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
