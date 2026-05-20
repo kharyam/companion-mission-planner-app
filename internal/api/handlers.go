@@ -4,15 +4,98 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"image/png"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/kamdynamics/kam-transfer/internal/device"
+	"github.com/kamdynamics/kam-transfer/internal/display"
 	"github.com/kamdynamics/kam-transfer/internal/kmz"
 	"github.com/kamdynamics/kam-transfer/internal/version"
 )
+
+// handleSystem returns host telemetry (uptime, CPU temp, network)
+// shared with the front-panel display. The web UI mirrors it in the
+// System panel.
+func (s *Server) handleSystem(w http.ResponseWriter, _ *http.Request) {
+	info := s.display.System()
+	resp := map[string]any{
+		"version":       info.Version,
+		"uptimeSeconds": int64(info.Uptime / time.Second),
+		"cpuTempC":      info.CPUTempC,
+		"net": map[string]any{
+			"up":       info.Net.Up,
+			"ip":       info.Net.IP,
+			"iface":    info.Net.Iface,
+			"wireless": info.Net.Wireless(),
+		},
+		"shutdownAllowed": s.display.ShutdownAllowed(),
+	}
+	if b := s.display.Battery(); b != nil && b.Present {
+		resp["battery"] = map[string]any{
+			"percent":       b.Percent,
+			"volts":         b.Volts,
+			"externalPower": b.ExternalPower,
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleSystemDisplay renders one of the front-panel display pages and
+// streams it back as a PNG, so the web UI can show a live mirror.
+// The page is selected via ?page=status|transfer|system|qr; defaults
+// to status.
+func (s *Server) handleSystemDisplay(w http.ResponseWriter, r *http.Request) {
+	page := display.PageStatus
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("page"))) {
+	case "", "status":
+		page = display.PageStatus
+	case "transfer":
+		page = display.PageTransfer
+	case "system":
+		page = display.PageSystem
+	case "qr":
+		page = display.PageQR
+	default:
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "page must be one of status, transfer, system, qr", nil)
+		return
+	}
+	img := s.display.RenderPage(page)
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := png.Encode(w, img); err != nil {
+		s.logger.Warn("display mirror encode failed", "err", err)
+	}
+}
+
+// handleSystemShutdown triggers the same safe-shutdown path the
+// front-panel button-Y long-press uses. Gated by
+// display.allowShutdown; the response is sent before poweroff so the
+// client sees a 200 rather than a connection drop.
+func (s *Server) handleSystemShutdown(w http.ResponseWriter, r *http.Request) {
+	if !s.display.ShutdownAllowed() {
+		writeError(w, http.StatusForbidden, CodeForbidden,
+			"shutdown is disabled; set display.allowShutdown: true in the daemon config", nil)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"ok":  true,
+		"at":  time.Now().UTC().Format(time.RFC3339),
+		"msg": "poweroff requested",
+	})
+	// Flush so the browser sees the 202 before the kernel pulls the
+	// rug. The actual shutdown runs after we return.
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	go func() {
+		if err := s.display.Shutdown(r.Context()); err != nil {
+			s.logger.Error("api shutdown failed", "err", err)
+		}
+	}()
+}
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	resp := map[string]any{

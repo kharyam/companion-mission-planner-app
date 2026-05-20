@@ -75,7 +75,7 @@ func newCanvas() (*image.RGBA, *gg.Context) {
 // render draws one page of the status screen.
 func render(s Snapshot, page Page) *image.RGBA {
 	switch page {
-	case pageQR:
+	case PageQR:
 		return renderQR(s.URL)
 	case PageTransfer:
 		return renderTransfer(s)

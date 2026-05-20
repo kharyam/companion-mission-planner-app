@@ -176,6 +176,78 @@ async function pollHealth() {
   }
 }
 
+// ---------- system panel ----------
+
+const MIRROR_REFRESH_MS = 5000;
+let mirrorPage = 'status';
+let mirrorTimer = 0;
+
+async function pollSystem() {
+  try {
+    const s = await api('/api/system');
+    $('sys-net').textContent = formatNet(s.net);
+    $('sys-cpu').textContent = (typeof s.cpuTempC === 'number' && s.cpuTempC > 0)
+      ? `${s.cpuTempC.toFixed(1)} °C`
+      : '—';
+    $('sys-uptime').textContent = formatUptime(s.uptimeSeconds);
+    $('sys-version').textContent = s.version || '—';
+    $('sys-battery').textContent = formatBattery(s.battery);
+    $('system-shutdown').classList.toggle('hidden', !s.shutdownAllowed);
+  } catch (e) {
+    // Don't toast on every failed poll — pollHealth will already shout.
+  }
+}
+
+function formatNet(n) {
+  if (!n || !n.up) return 'no network';
+  const kind = n.wireless ? 'Wi-Fi' : 'Wired';
+  const iface = n.iface ? ` (${n.iface})` : '';
+  return `${kind}   ${n.ip || '—'}${iface}`;
+}
+
+function formatUptime(s) {
+  if (!Number.isFinite(s) || s <= 0) return '—';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  if (m > 0) return `${m}m`;
+  return `${Math.floor(s)}s`;
+}
+
+function formatBattery(b) {
+  if (!b) return 'no battery board detected';
+  const pct = Math.round(b.percent ?? 0);
+  const volts = (typeof b.volts === 'number') ? `   ${b.volts.toFixed(2)} V` : '';
+  const src = b.externalPower ? '   external power' : '   on battery';
+  return `${pct}%${volts}${src}`;
+}
+
+// refreshMirror flips the display-preview img src to a fresh URL,
+// cache-busted so the browser actually re-fetches the rendered page.
+function refreshMirror() {
+  const img = $('display-mirror-img');
+  const url = withAuthURL(`/api/system/display.png?page=${encodeURIComponent(mirrorPage)}&t=${Date.now()}`);
+  img.src = url;
+}
+
+function setMirrorPage(page) {
+  mirrorPage = page;
+  for (const btn of $('display-mirror-pages').querySelectorAll('button')) {
+    btn.classList.toggle('active', btn.dataset.page === page);
+  }
+  refreshMirror();
+}
+
+async function requestShutdown() {
+  if (!confirm('Power off the Pi? The daemon will become unreachable until the device is powered back on.')) return;
+  try {
+    await api('/api/system/shutdown', { method: 'POST' });
+    toast('ok', 'Shutdown requested', 'the Pi will power off shortly');
+  } catch (e) {
+    toast('bad', 'Could not shut down', e.message || e.code);
+  }
+}
+
 // renderBattery shows or hides the topbar battery widget based on the
 // /api/health response. The widget appears only when the server has a
 // PiSugar reading; on desktop/dev hosts the field is absent and the
@@ -1192,6 +1264,18 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   await pollHealth();
   setInterval(pollHealth, 10000);
+
+  // System panel: telemetry + display mirror + shutdown.
+  for (const btn of $('display-mirror-pages').querySelectorAll('button')) {
+    btn.addEventListener('click', () => setMirrorPage(btn.dataset.page));
+  }
+  $('system-refresh').addEventListener('click', () => { pollSystem(); refreshMirror(); });
+  $('system-shutdown').addEventListener('click', requestShutdown);
+  await pollSystem();
+  setInterval(pollSystem, 10000);
+  refreshMirror();
+  mirrorTimer = setInterval(refreshMirror, MIRROR_REFRESH_MS);
+
   await loadDevices();
   wireEvents();
 });

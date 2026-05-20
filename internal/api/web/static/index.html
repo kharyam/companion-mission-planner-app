@@ -98,6 +98,37 @@
     </form>
   </section>
 
+  <section class="panel" id="system-panel">
+    <div class="panel-head">
+      <h2><span class="num sys">⚙</span> System</h2>
+      <div class="head-actions">
+        <button class="ghost" id="system-refresh" title="Refresh telemetry now">Refresh</button>
+        <button class="ghost danger hidden" id="system-shutdown" title="Power the Pi off">Shut down…</button>
+      </div>
+    </div>
+    <div class="system-body">
+      <dl class="system-info">
+        <dt>Network</dt><dd id="sys-net" class="mono">—</dd>
+        <dt>CPU temp</dt><dd id="sys-cpu" class="mono">—</dd>
+        <dt>Uptime</dt><dd id="sys-uptime" class="mono">—</dd>
+        <dt>Battery</dt><dd id="sys-battery" class="mono">—</dd>
+        <dt>Version</dt><dd id="sys-version" class="mono">—</dd>
+      </dl>
+      <div class="display-mirror">
+        <div class="display-mirror-frame">
+          <img id="display-mirror-img" alt="front-panel display preview" width="320" height="240">
+        </div>
+        <div class="display-mirror-pages" id="display-mirror-pages">
+          <button type="button" data-page="status" class="active">Status</button>
+          <button type="button" data-page="transfer">Transfer</button>
+          <button type="button" data-page="system">System</button>
+          <button type="button" data-page="qr">QR</button>
+        </div>
+        <p class="dim display-mirror-hint">Live preview of the 320×240 front-panel display. Refreshes every 5s.</p>
+      </div>
+    </div>
+  </section>
+
 </main>
 
 <aside class="log" id="log" aria-live="polite"></aside>

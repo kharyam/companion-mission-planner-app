@@ -160,6 +160,9 @@ func (s *Server) pumpDeviceEvents(ctx context.Context) {
 // no third-party router needed.
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/system", s.handleSystem)
+	mux.HandleFunc("GET /api/system/display.png", s.handleSystemDisplay)
+	mux.HandleFunc("POST /api/system/shutdown", s.handleSystemShutdown)
 	mux.HandleFunc("GET /api/devices", s.handleListDevices)
 	mux.HandleFunc("GET /api/devices/{deviceId}/slots", s.handleListSlots)
 	mux.HandleFunc("GET /api/devices/{deviceId}/slots/{guid}/preview", s.handleReadPreview)
