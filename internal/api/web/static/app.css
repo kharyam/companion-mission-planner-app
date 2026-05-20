@@ -691,6 +691,11 @@ main {
   word-break: break-word;
 }
 
+.system-info dt.hidden,
+.system-info dd.hidden {
+  display: none;
+}
+
 .system-info .mono {
   font-family: var(--mono);
   font-size: 13px;

@@ -7,6 +7,7 @@ import (
 
 	"periph.io/x/conn/v3/i2c"
 	"periph.io/x/conn/v3/i2c/i2creg"
+	"periph.io/x/host/v3"
 )
 
 // piSugar reads a PiSugar 3 UPS over I2C bus 1. It implements battery.
@@ -16,6 +17,14 @@ type piSugar struct {
 }
 
 func openPiSugar() (battery, error) {
+	// periph.io drivers must be initialized once before any i2creg.Open
+	// call. detectHardware does this for the display path, but
+	// RunBattery runs in its own goroutine and can race ahead when the
+	// HAT is absent — so we init here too. host.Init is mutex-guarded
+	// and returns the cached state on repeat calls, so this is safe.
+	if _, err := host.Init(); err != nil {
+		return nil, fmt.Errorf("periph host init: %w", err)
+	}
 	bus, err := i2creg.Open("1")
 	if err != nil {
 		return nil, fmt.Errorf("open I2C bus 1: %w", err)

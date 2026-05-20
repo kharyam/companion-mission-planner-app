@@ -23,6 +23,7 @@ func (s *Server) handleSystem(w http.ResponseWriter, _ *http.Request) {
 	info := s.display.System()
 	resp := map[string]any{
 		"version":       info.Version,
+		"hostname":      info.Hostname,
 		"uptimeSeconds": int64(info.Uptime / time.Second),
 		"cpuTempC":      info.CPUTempC,
 		"net": map[string]any{
@@ -32,6 +33,12 @@ func (s *Server) handleSystem(w http.ResponseWriter, _ *http.Request) {
 			"wireless": info.Net.Wireless(),
 		},
 		"shutdownAllowed": s.display.ShutdownAllowed(),
+	}
+	if info.Tailscale.Up {
+		resp["tailscale"] = map[string]any{
+			"ip":    info.Tailscale.IP,
+			"iface": info.Tailscale.Iface,
+		}
 	}
 	if b := s.display.Battery(); b != nil && b.Present {
 		resp["battery"] = map[string]any{
