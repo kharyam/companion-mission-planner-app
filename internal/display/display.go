@@ -282,20 +282,32 @@ func (c *Controller) Battery() *BatteryStatus {
 // SystemInfo is a minimal slice of host telemetry the screen-render
 // loop already gathers. Exposed for the HTTP API.
 type SystemInfo struct {
-	Version  string
-	Uptime   time.Duration
-	CPUTempC float64
-	Net      NetStatus
+	Version   string
+	Hostname  string
+	Uptime    time.Duration
+	CPUTempC  float64
+	Net       NetStatus
+	Tailscale TailscaleInfo // zero-valued when no tailscale interface is up
+}
+
+// TailscaleInfo reports the host's Tailscale address, if any.
+type TailscaleInfo struct {
+	Up    bool   // a tailscale interface is up with an IPv4
+	IP    string // 100.x.x.x assigned by Tailscale
+	Iface string // typically "tailscale0"
 }
 
 // System returns a fresh telemetry snapshot. Safe to call from any
 // goroutine.
 func (c *Controller) System() SystemInfo {
+	hostname, _ := os.Hostname()
 	return SystemInfo{
-		Version:  version.Version,
-		Uptime:   time.Since(c.started),
-		CPUTempC: cpuTemp(),
-		Net:      readNet(),
+		Version:   version.Version,
+		Hostname:  hostname,
+		Uptime:    time.Since(c.started),
+		CPUTempC:  cpuTemp(),
+		Net:       readNet(),
+		Tailscale: readTailscale(),
 	}
 }
 
@@ -419,6 +431,38 @@ func readNet() NetStatus {
 		}
 	}
 	return best
+}
+
+// readTailscale picks the first IPv4 found on an interface whose name
+// starts with "tailscale" (typically tailscale0). Returns a zero
+// TailscaleInfo when Tailscale isn't installed/up.
+func readTailscale() TailscaleInfo {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return TailscaleInfo{}
+	}
+	for _, ifc := range ifaces {
+		if !strings.HasPrefix(ifc.Name, "tailscale") {
+			continue
+		}
+		if ifc.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, _ := ifc.Addrs()
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip4 := ip.To4(); ip4 != nil {
+				return TailscaleInfo{Up: true, IP: ip4.String(), Iface: ifc.Name}
+			}
+		}
+	}
+	return TailscaleInfo{}
 }
 
 // cpuTemp reads the SoC temperature in °C, or 0 if unavailable.

@@ -185,6 +185,8 @@ let mirrorTimer = 0;
 async function pollSystem() {
   try {
     const s = await api('/api/system');
+    $('sys-host').textContent = s.hostname || '—';
+    setTailscaleRow(s.tailscale);
     $('sys-net').textContent = formatNet(s.net);
     $('sys-cpu').textContent = (typeof s.cpuTempC === 'number' && s.cpuTempC > 0)
       ? `${s.cpuTempC.toFixed(1)} °C`
@@ -195,6 +197,20 @@ async function pollSystem() {
     $('system-shutdown').classList.toggle('hidden', !s.shutdownAllowed);
   } catch (e) {
     // Don't toast on every failed poll — pollHealth will already shout.
+  }
+}
+
+// setTailscaleRow shows the Tailscale row only when the daemon reports
+// an active tailscale interface; for non-Tailscale hosts the row stays
+// hidden so the panel doesn't carry a permanent "—".
+function setTailscaleRow(t) {
+  const show = !!(t && t.ip);
+  for (const el of document.querySelectorAll('.row-tailscale')) {
+    el.classList.toggle('hidden', !show);
+  }
+  if (show) {
+    const iface = t.iface ? ` (${t.iface})` : '';
+    $('sys-tailscale').textContent = `${t.ip}${iface}`;
   }
 }
 
