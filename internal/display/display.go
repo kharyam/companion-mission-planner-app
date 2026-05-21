@@ -242,6 +242,7 @@ type NetStatus struct {
 	Up    bool
 	IP    string
 	Iface string
+	SSID  string // associated Wi-Fi network name; empty when wired or unknown
 }
 
 // Wireless reports whether the active interface looks like Wi-Fi.
@@ -439,7 +440,49 @@ func readNet() NetStatus {
 			}
 		}
 	}
+	if best.Up && best.Wireless() {
+		best.SSID = wifiSSID(best.Iface)
+	}
 	return best
+}
+
+// wifiSSID returns the network name the given wireless interface is
+// associated with, or "" when it can't be determined — not connected,
+// not actually Wi-Fi, or none of the query tools are installed. It's
+// best-effort: we shell out to whichever of the standard Pi-OS wireless
+// tools is present and tolerate the others being absent.
+func wifiSSID(iface string) string {
+	// iwgetid (wireless-tools) is the most direct: prints just the SSID.
+	if out, err := exec.Command("iwgetid", iface, "-r").Output(); err == nil {
+		if s := strings.TrimSpace(string(out)); s != "" {
+			return s
+		}
+	}
+	// NetworkManager (default on Bookworm): the active connection's SSID.
+	// Terse output is "active:ssid" per line, e.g. "yes:MyNetwork".
+	if out, err := exec.Command("nmcli", "-t", "-f", "active,ssid", "dev", "wifi").Output(); err == nil {
+		for line := range strings.SplitSeq(string(out), "\n") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 && parts[0] == "yes" {
+				// nmcli -t escapes literal ':' in the SSID as '\:'.
+				if s := strings.TrimSpace(strings.ReplaceAll(parts[1], `\:`, ":")); s != "" {
+					return s
+				}
+			}
+		}
+	}
+	// iw is the low-level fallback present on most modern images.
+	if out, err := exec.Command("iw", "dev", iface, "link").Output(); err == nil {
+		for line := range strings.SplitSeq(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if rest, ok := strings.CutPrefix(line, "SSID:"); ok {
+				if s := strings.TrimSpace(rest); s != "" {
+					return s
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // readTailscale picks the first IPv4 found on an interface whose name
