@@ -243,7 +243,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// would 401 the very script that's supposed to handle auth.
 		// Anything under /api/* (and the websocket) still requires
 		// the token below.
-		if r.URL.Path == "/ui" || r.URL.Path == "/ui/" || strings.HasPrefix(r.URL.Path, "/ui/static/") {
+		//
+		// "/" is exempt too: it's just a 302 to /ui/ (see routes), and
+		// gating it meant a browser pointed at the bare host returned
+		// the JSON 401 instead of redirecting into the bootstrap flow.
+		if r.URL.Path == "/" || r.URL.Path == "/ui" || r.URL.Path == "/ui/" || strings.HasPrefix(r.URL.Path, "/ui/static/") {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -31,6 +31,7 @@ func (s *Server) handleSystem(w http.ResponseWriter, _ *http.Request) {
 			"ip":       info.Net.IP,
 			"iface":    info.Net.Iface,
 			"wireless": info.Net.Wireless(),
+			"ssid":     info.Net.SSID,
 		},
 		"shutdownAllowed": s.display.ShutdownAllowed(),
 	}

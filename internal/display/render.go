@@ -198,11 +198,18 @@ func renderStatus(s Snapshot) *image.RGBA {
 	setCol(dc, colMuted)
 	netLabel := "No network"
 	if s.Net.Up {
-		kind := "Wired"
 		if s.Net.Wireless() {
-			kind = "Wi-Fi"
+			// Surface the network name — that's what an operator looks
+			// for. The interface (wlan0) is implied, so drop it here to
+			// keep the line short; the System page still lists it.
+			if s.Net.SSID != "" {
+				netLabel = fmt.Sprintf("Wi-Fi   %s   %s", s.Net.SSID, s.Net.IP)
+			} else {
+				netLabel = fmt.Sprintf("Wi-Fi   %s   (%s)", s.Net.IP, s.Net.Iface)
+			}
+		} else {
+			netLabel = fmt.Sprintf("Wired   %s   (%s)", s.Net.IP, s.Net.Iface)
 		}
-		netLabel = fmt.Sprintf("%s   %s   (%s)", kind, s.Net.IP, s.Net.Iface)
 	}
 	dc.DrawString(netLabel, 16, 168)
 
@@ -266,8 +273,14 @@ func renderSystem(s Snapshot) *image.RGBA {
 	if s.Tailscale.Up {
 		rows = append(rows, [2]string{"Tailscale", s.Tailscale.IP + "  " + ifEmpty(s.Tailscale.Iface, "")})
 	}
+	// For Wi-Fi, show the network name beside the IP (more useful than
+	// the always-"wlan0" interface); wired keeps showing the interface.
+	netDetail := ifEmpty(s.Net.Iface, "")
+	if s.Net.Wireless() && s.Net.SSID != "" {
+		netDetail = s.Net.SSID
+	}
 	rows = append(rows,
-		[2]string{"Network", ifEmpty(s.Net.IP, "—") + "  " + ifEmpty(s.Net.Iface, "")},
+		[2]string{"Network", strings.TrimSpace(ifEmpty(s.Net.IP, "—") + "  " + netDetail)},
 		[2]string{"Controller", controllerPill(s.Controller).text},
 		[2]string{"Battery", battLine},
 		[2]string{"Version", s.Version},

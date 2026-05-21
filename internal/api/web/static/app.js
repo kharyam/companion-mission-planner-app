@@ -217,6 +217,11 @@ function setTailscaleRow(t) {
 function formatNet(n) {
   if (!n || !n.up) return 'no network';
   const kind = n.wireless ? 'Wi-Fi' : 'Wired';
+  // For Wi-Fi, lead with the network name; the interface is always
+  // wlan0 and adds little. Wired keeps showing the interface.
+  if (n.wireless && n.ssid) {
+    return `${kind}   ${n.ssid}   ${n.ip || '—'}`;
+  }
   const iface = n.iface ? ` (${n.iface})` : '';
   return `${kind}   ${n.ip || '—'}${iface}`;
 }
