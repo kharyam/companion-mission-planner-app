@@ -299,6 +299,9 @@ async function loadDevices() {
     list.innerHTML = '';
     if (!devices?.length) {
       list.innerHTML = '<li class="placeholder">no devices found — plug a controller in then refresh</li>';
+      // Everything was unplugged — collapse the device-scoped panels so a
+      // stale Slots/Transfer/Media view doesn't linger over a dead device.
+      if (state.selectedDevice) hideDevicePanels();
       return;
     }
     for (const d of devices) {
@@ -344,9 +347,13 @@ async function loadDevices() {
     // re-opens the correct panel without the user clicking again.
     if (state.selectedDevice) {
       const fresh = devices.find(d => d.id === state.selectedDevice.id);
-      if (fresh && fresh.kind !== state.selectedDevice.kind) {
+      if (!fresh) {
+        // The selected device dropped off the bus (unplugged) while others
+        // remain — collapse its Slots/Transfer/Media panels.
+        hideDevicePanels();
+      } else if (fresh.kind !== state.selectedDevice.kind) {
         selectDevice(fresh);
-      } else if (fresh) {
+      } else {
         state.selectedDevice = fresh;
       }
     }
@@ -356,6 +363,19 @@ async function loadDevices() {
   } finally {
     $('devices-panel').classList.remove('loading');
   }
+}
+
+// hideDevicePanels collapses every device-scoped panel and clears the
+// current selection. Called from loadDevices() when the selected device
+// is no longer present on the bus, so the Slots / Transfer KMZ / Media
+// views don't linger pointing at a device that's been unplugged.
+function hideDevicePanels() {
+  $('slots-panel').classList.add('hidden');
+  $('transfer-panel').classList.add('hidden');
+  $('media-panel').classList.add('hidden');
+  state.selectedDevice = null;
+  state.selectedSlot = null;
+  resetTransferForm();
 }
 
 async function selectDevice(d) {
