@@ -308,7 +308,7 @@ func renderQR(url string) *image.RGBA {
 
 	setCol(dc, rgb{0, 0, 0})
 	setFace(dc, fontBold, 14)
-	dc.DrawStringAnchored("SCAN FOR THE KAM UI", ScreenW/2, 22, 0.5, 0.5)
+	dc.DrawStringAnchored("SCAN FOR WEB UI", ScreenW/2, 22, 0.5, 0.5)
 
 	const qrSize = 168
 	if q, err := qrcode.New(url, qrcode.Medium); err == nil {
