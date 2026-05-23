@@ -32,6 +32,14 @@ const st7789ClockHz = 60 * physic.MegaHertz
 func openST7789() (*st7789, error) {
 	port, err := spireg.Open("SPI0.1")
 	if err != nil {
+		// The usual cause on a Pi is that the SPI bus isn't enabled, so
+		// periph registered no ports at all and returns a bare "no port
+		// found". Replace its generic "did you forget to call Init()?"
+		// tail with an actionable fix rather than leaving the operator
+		// guessing — we do call host.Init() (see detectHardware).
+		if len(spireg.All()) == 0 {
+			return nil, fmt.Errorf("open SPI0.1: %w — SPI bus not enabled; run `sudo raspi-config nonint do_spi 0` and reboot, then confirm /dev/spidev0.1 exists", err)
+		}
 		return nil, fmt.Errorf("open SPI0.1: %w", err)
 	}
 	conn, err := port.Connect(st7789ClockHz, spi.Mode0, 8)

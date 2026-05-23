@@ -16,6 +16,7 @@ import (
 	"github.com/kamdynamics/kam-transfer/internal/api"
 	"github.com/kamdynamics/kam-transfer/internal/config"
 	"github.com/kamdynamics/kam-transfer/internal/device"
+	"github.com/kamdynamics/kam-transfer/internal/display"
 	"github.com/kamdynamics/kam-transfer/internal/version"
 )
 
@@ -48,6 +49,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(
 		newServeCmd(),
+		newSplashCmd(),
 		newListDevicesCmd(),
 		newListSlotsCmd(),
 		newTransferCmd(),
@@ -57,6 +59,29 @@ func newRootCmd() *cobra.Command {
 		newVersionCmd(),
 	)
 	return root
+}
+
+// newSplashCmd drives the front-panel boot splash. Meant to run as an
+// early systemd service before `serve`: it shows a "starting" banner and
+// scrolls the system journal on the Display HAT Mini while the Pi boots,
+// then exits on SIGTERM when the daemon is about to claim the screen. A
+// clean no-op on hosts without the HAT.
+func newSplashCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:          "splash",
+		Short:        "Show a boot splash on the Display HAT Mini until the daemon starts",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			logger := newLogger(cfg.Logging.Level)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return display.RunSplash(ctx, cfg.Display, logger)
+		},
+	}
 }
 
 func loadConfig() (*config.Config, error) {

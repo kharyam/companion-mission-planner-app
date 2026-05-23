@@ -139,6 +139,16 @@ pi ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
 
 Tune the screen with the `display:` block in `config.yaml` — see [CONFIGURATION.md](CONFIGURATION.md#status-display). If the HAT is mounted the other way up, set `rotation: 0`.
 
+**Boot splash (optional):** by default the screen stays blank from power-on until the daemon comes up (after the network is online). To fill that gap, install the companion `kam-transfer-splash.service`, which shows a "starting" banner and scrolls the system journal on the HAT while the Pi boots, then hands the screen over the moment the daemon starts:
+
+```bash
+sudo cp deploy/kam-transfer-splash.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable kam-transfer-splash
+```
+
+It runs as root (for journal + SPI access with no extra group setup) and self-disables on a Pi without the HAT, so enabling it is harmless either way. The daemon's `kam-transfer.service` stops it (`ExecStartPre`) before claiming the SPI bus, so the two never contend for the panel — the splash is purely a boot-time stand-in. If you installed `kam-transfer.service` before this change, re-copy it so it picks up the handoff line. Confirm with `journalctl -u kam-transfer-splash` (`boot splash active`) and watch the screen switch from the scrolling log to the status page as `kam-transfer.service` starts.
+
 ## macOS
 
 ```bash
