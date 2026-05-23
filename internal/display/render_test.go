@@ -175,6 +175,26 @@ func TestLogRing(t *testing.T) {
 	}
 }
 
+func TestRotateButton(t *testing.T) {
+	// Default mounting (rotation 180): identity.
+	for _, b := range []Button{ButtonA, ButtonB, ButtonX, ButtonY} {
+		if got := rotateButton(b, true); got != b {
+			t.Errorf("rotateButton(%d, true) = %d, want %d (identity)", b, got, b)
+		}
+	}
+	// Flipped mounting (rotation 0): diagonal swap A↔Y, B↔X. Applying it
+	// twice must round-trip back to the physical key.
+	swap := map[Button]Button{ButtonA: ButtonY, ButtonY: ButtonA, ButtonB: ButtonX, ButtonX: ButtonB}
+	for in, want := range swap {
+		if got := rotateButton(in, false); got != want {
+			t.Errorf("rotateButton(%d, false) = %d, want %d", in, got, want)
+		}
+		if got := rotateButton(rotateButton(in, false), false); got != in {
+			t.Errorf("rotateButton twice (%d) = %d, want %d (involution)", in, got, in)
+		}
+	}
+}
+
 func TestHealthLED(t *testing.T) {
 	cases := []struct {
 		name    string

@@ -218,6 +218,7 @@ func (h *displayHAT) pollButtons() {
 }
 
 func (h *displayHAT) emit(ev ButtonEvent) {
+	ev.Button = rotateButton(ev.Button, h.rotate180) // follow screen rotation
 	select {
 	case h.events <- ev:
 	default: // drop rather than block if the consumer is busy

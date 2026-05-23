@@ -74,6 +74,30 @@ type ButtonEvent struct {
 	Long   bool // true when held past the long-press threshold
 }
 
+// rotateButton maps a physical key to the logical button for the panel's
+// orientation, so the key nearest each on-screen corner triggers that
+// corner's action. The keys are fixed to the board (A top-left, B
+// bottom-left, X top-right, Y bottom-right) and the UI is built around the
+// default rotation:180 mounting — so that case is the identity. rotation:0
+// flips the image 180° relative to that mounting, so the corner keys swap
+// diagonally: A↔Y and B↔X.
+func rotateButton(b Button, rotate180 bool) Button {
+	if rotate180 {
+		return b // default mounting: keys already line up with the screen
+	}
+	switch b { // rotation:0 — panel flipped vs. the default; swap diagonals
+	case ButtonA:
+		return ButtonY
+	case ButtonB:
+		return ButtonX
+	case ButtonX:
+		return ButtonB
+	case ButtonY:
+		return ButtonA
+	}
+	return b
+}
+
 // Page is one screen of the status display, cycled with button A.
 type Page int
 
