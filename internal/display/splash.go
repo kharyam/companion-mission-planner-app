@@ -32,11 +32,10 @@ func RunSplash(ctx context.Context, cfg config.DisplayConfig, logger *slog.Logge
 		logger.Debug("boot splash disabled by config")
 		return nil
 	}
-	// The splash unit starts very early in boot (before sysinit.target, to
-	// get ahead of slow units like cloud-init), so udev may not have
-	// created the SPI device node yet. Retry briefly before concluding
-	// there's no HAT.
-	hw, err := detectWithRetry(ctx, cfg, 5*time.Second)
+	// The splash unit starts as soon as udev is up — before local-fs.target,
+	// to skip the /boot fsck wait — so the SPI device node may not exist
+	// yet. Retry for a while before concluding there's no HAT.
+	hw, err := detectWithRetry(ctx, cfg, 10*time.Second)
 	if err != nil {
 		// No HAT (or not this platform): a clean no-op, like Run.
 		logger.Info("boot splash inactive", "reason", err)
