@@ -366,7 +366,7 @@ func renderSplash(ver string, lines []string) *image.RGBA {
 		fontPx  = 10.0
 	)
 	maxW := float64(ScreenW) - 2*leftPad
-	rows := int((float64(ScreenH) - top) / lineH)
+	rows := (ScreenH - top) / int(lineH) // integer math: avoids a const float→int truncation
 	if len(lines) > rows {
 		lines = lines[len(lines)-rows:]
 	}
