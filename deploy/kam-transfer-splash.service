@@ -11,9 +11,11 @@
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable kam-transfer-splash
 #
-# Runs as root so it can read the journal and reach GPIO/SPI without any
-# group setup. It self-disables (clean exit) on a Pi without the HAT, so
-# enabling it is harmless on hardware that has no screen.
+# Runs as the same user as kam-transfer.service (keep the two User= in
+# sync) so it reads the same display config — matching rotation/brightness
+# — and systemd provides $HOME. The groups give it the SPI/GPIO bus and
+# journal read access. It self-disables (clean exit) on a Pi without the
+# HAT, so enabling it is harmless on hardware that has no screen.
 
 [Unit]
 Description=KAM Mission Planner front-panel boot splash
@@ -23,6 +25,11 @@ Before=kam-transfer.service
 
 [Service]
 Type=simple
+# Match kam-transfer.service's User=. Without a User=, systemd leaves
+# $HOME unset and the binary's config lookup fails ("$HOME is not
+# defined"). spi/gpio reach the panel; systemd-journal reads the boot log.
+User=kmendez
+SupplementaryGroups=spi gpio systemd-journal
 ExecStart=/usr/local/bin/kam-transfer splash
 Restart=no
 # The daemon stops us via SIGTERM at handoff; exit promptly.
