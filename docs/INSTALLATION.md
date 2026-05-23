@@ -147,7 +147,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable kam-transfer-splash
 ```
 
-It runs as root (for journal + SPI access with no extra group setup) and self-disables on a Pi without the HAT, so enabling it is harmless either way. The daemon's `kam-transfer.service` stops it (`ExecStartPre`) before claiming the SPI bus, so the two never contend for the panel — the splash is purely a boot-time stand-in. If you installed `kam-transfer.service` before this change, re-copy it so it picks up the handoff line. Confirm with `journalctl -u kam-transfer-splash` (`boot splash active`) and watch the screen switch from the scrolling log to the status page as `kam-transfer.service` starts.
+The unit ships with `User=kmendez` — **set it to the same user as `kam-transfer.service`** (without a `User=`, systemd leaves `$HOME` unset and the binary's config lookup fails with `$HOME is not defined`). Its `SupplementaryGroups=spi gpio systemd-journal` give it the panel bus and journal-read access; the user already needs `spi`/`gpio` for the status screen. It self-disables on a Pi without the HAT, so enabling it is harmless either way. The daemon's `kam-transfer.service` stops it (`ExecStartPre`, run as root via the `+` prefix) before claiming the SPI bus, so the two never contend for the panel — the splash is purely a boot-time stand-in. If you installed `kam-transfer.service` before this change, re-copy it so it picks up the handoff line. Confirm with `journalctl -u kam-transfer-splash` (`boot splash active`) and watch the screen switch from the scrolling log to the status page as `kam-transfer.service` starts.
 
 ## macOS
 

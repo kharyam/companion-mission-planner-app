@@ -74,7 +74,11 @@ func newSplashCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
-				return err
+				// A boot splash is cosmetic — never let a config problem
+				// (e.g. a service started without $HOME) stop it drawing.
+				// Fall back to built-in defaults and carry on.
+				fmt.Fprintf(os.Stderr, "kam-transfer: splash falling back to defaults (%v)\n", err)
+				cfg = config.Default()
 			}
 			logger := newLogger(cfg.Logging.Level)
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
