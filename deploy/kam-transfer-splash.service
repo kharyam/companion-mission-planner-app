@@ -21,15 +21,18 @@
 Description=KAM Mission Planner front-panel boot splash
 Documentation=https://github.com/kamdynamics/kam-transfer
 # Start as early in boot as possible. DefaultDependencies=no drops the
-# implicit ordering after basic.target/sysinit.target — on some images
-# sysinit.target isn't reached for ~13s (e.g. cloud-init), which is most
-# of the visible window. We only need local-fs (for $HOME/config),
-# journald (log scroll) and udev (which creates /dev/spidev*); the binary
-# retries device detection to cover the udev race from starting this
-# early. Truly from-power-on would need the kernel framebuffer/Plymouth
-# route, which can't share the SPI bus with the daemon.
+# implicit ordering after basic.target/sysinit.target. We deliberately do
+# NOT wait for local-fs.target either: it blocks on every fstab mount
+# (notably the /boot firmware partition's fsck, ~1.2s) that the splash
+# doesn't need. The splash only needs udev (which creates /dev/spidev*),
+# journald (log scroll) and $HOME/config — and $HOME lives on the root
+# filesystem, already mounted in initramfs. The binary retries device
+# detection to cover the udev race from starting this early, and falls
+# back to default settings if config isn't readable yet. Truly
+# from-power-on would need the kernel framebuffer/Plymouth route, which
+# can't share the SPI bus with the daemon.
 DefaultDependencies=no
-After=local-fs.target systemd-journald.service systemd-udevd.service
+After=systemd-udevd.service systemd-journald.service
 Before=kam-transfer.service shutdown.target
 Conflicts=shutdown.target
 
