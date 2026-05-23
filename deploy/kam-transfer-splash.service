@@ -20,8 +20,17 @@
 [Unit]
 Description=KAM Mission Planner front-panel boot splash
 Documentation=https://github.com/kamdynamics/kam-transfer
-After=systemd-journald.service local-fs.target
-Before=kam-transfer.service
+# Start as early in boot as the panel allows. DefaultDependencies=no drops
+# the implicit wait for basic.target (sockets/timers/slices); we still
+# order after sysinit.target so udev has created /dev/spidev* and the
+# gpiochips, local-fs is mounted (for $HOME/config), and journald is up
+# for the log scroll. This is the earliest a userspace SPI driver can run
+# — anything sooner needs the kernel framebuffer/Plymouth route, which
+# can't share the SPI bus with the daemon.
+DefaultDependencies=no
+After=sysinit.target systemd-journald.service
+Before=kam-transfer.service shutdown.target
+Conflicts=shutdown.target
 
 [Service]
 Type=simple
