@@ -32,7 +32,11 @@ func RunSplash(ctx context.Context, cfg config.DisplayConfig, logger *slog.Logge
 		logger.Debug("boot splash disabled by config")
 		return nil
 	}
-	hw, err := detectHardware(cfg)
+	// The splash unit starts very early in boot (before sysinit.target, to
+	// get ahead of slow units like cloud-init), so udev may not have
+	// created the SPI device node yet. Retry briefly before concluding
+	// there's no HAT.
+	hw, err := detectWithRetry(ctx, cfg, 5*time.Second)
 	if err != nil {
 		// No HAT (or not this platform): a clean no-op, like Run.
 		logger.Info("boot splash inactive", "reason", err)
@@ -80,6 +84,28 @@ func RunSplash(ctx context.Context, cfg config.DisplayConfig, logger *slog.Logge
 				draw()
 				dirty = false
 			}
+		}
+	}
+}
+
+// detectWithRetry calls detectHardware until it succeeds or the window
+// elapses, polling every 250ms. The splash runs before udev is
+// guaranteed to have created /dev/spidev*, so a first miss is expected
+// rather than fatal; it returns the last error if nothing appears.
+func detectWithRetry(ctx context.Context, cfg config.DisplayConfig, window time.Duration) (panel, error) {
+	deadline := time.Now().Add(window)
+	for {
+		hw, err := detectHardware(cfg)
+		if err == nil {
+			return hw, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(250 * time.Millisecond):
 		}
 	}
 }
