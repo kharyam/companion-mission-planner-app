@@ -335,6 +335,73 @@ func renderMessage(title, sub string) *image.RGBA {
 	return img
 }
 
+// renderSplash draws the boot splash: a "starting" banner plus the tail
+// of the system journal scrolling beneath it, newest line at the bottom.
+// Shown by RunSplash while the Pi boots, before the main daemon takes
+// over the screen.
+func renderSplash(ver string, lines []string) *image.RGBA {
+	img, dc := newCanvas()
+	setCol(dc, colBG)
+	dc.Clear()
+
+	// Accent banner — a battery-free variant of header() (no Snapshot to
+	// draw a battery widget from during early boot).
+	const hb = 34
+	setCol(dc, colAccent)
+	dc.DrawRectangle(0, 0, ScreenW, hb)
+	dc.Fill()
+	logoW := kamLogo.Bounds().Dx()
+	dc.DrawImage(kamLogo, 6, (hb-kamLogo.Bounds().Dy())/2)
+	setCol(dc, colWhite)
+	setFace(dc, fontBold, 14)
+	dc.DrawStringAnchored("STARTING…", float64(6+logoW+10), hb/2, 0, 0.5)
+	setFace(dc, fontRegular, 11)
+	dc.DrawStringAnchored("v"+ver, ScreenW-10, hb/2, 1, 0.5)
+
+	// Scrolling log region. Keep only the lines that fit, newest last.
+	const (
+		top     = hb + 7
+		lineH   = 13.0
+		leftPad = 8.0
+		fontPx  = 10.0
+	)
+	maxW := float64(ScreenW) - 2*leftPad
+	rows := (ScreenH - top) / int(lineH) // integer math: avoids a const float→int truncation
+	if len(lines) > rows {
+		lines = lines[len(lines)-rows:]
+	}
+	setFace(dc, fontRegular, fontPx)
+	y := float64(top) + lineH
+	last := len(lines) - 1
+	for i, ln := range lines {
+		if i == last {
+			setCol(dc, colText) // newest line brightest
+		} else {
+			setCol(dc, colMuted)
+		}
+		dc.DrawString(truncateToWidth(dc, ln, maxW), leftPad, y)
+		y += lineH
+	}
+	return img
+}
+
+// truncateToWidth shortens s (appending an ellipsis) until it fits maxW
+// at the context's current font face. Returns s unchanged when it fits.
+func truncateToWidth(dc *gg.Context, s string, maxW float64) string {
+	if w, _ := dc.MeasureString(s); w <= maxW {
+		return s
+	}
+	const ell = "…"
+	r := []rune(s)
+	for len(r) > 1 {
+		r = r[:len(r)-1]
+		if w, _ := dc.MeasureString(string(r) + ell); w <= maxW {
+			return string(r) + ell
+		}
+	}
+	return ell
+}
+
 // pill is a coloured status badge.
 type pill struct {
 	text string

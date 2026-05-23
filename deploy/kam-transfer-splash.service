@@ -1,0 +1,32 @@
+# kam-transfer front-panel boot splash (optional)
+#
+# Shows a "starting" banner and scrolls the system journal on the
+# Pimoroni Display HAT Mini while the Pi boots, so the screen isn't blank
+# in the gap between power-on and the main daemon coming up. The moment
+# kam-transfer.service starts it stops this unit (see its ExecStartPre),
+# freeing the SPI bus so the daemon can draw its status page.
+#
+# Install alongside kam-transfer.service:
+#   sudo cp deploy/kam-transfer-splash.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable kam-transfer-splash
+#
+# Runs as root so it can read the journal and reach GPIO/SPI without any
+# group setup. It self-disables (clean exit) on a Pi without the HAT, so
+# enabling it is harmless on hardware that has no screen.
+
+[Unit]
+Description=KAM Mission Planner front-panel boot splash
+Documentation=https://github.com/kamdynamics/kam-transfer
+After=systemd-journald.service local-fs.target
+Before=kam-transfer.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/kam-transfer splash
+Restart=no
+# The daemon stops us via SIGTERM at handoff; exit promptly.
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

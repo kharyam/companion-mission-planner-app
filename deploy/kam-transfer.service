@@ -19,13 +19,19 @@
 [Unit]
 Description=KAM Mission Planner companion daemon
 Documentation=https://github.com/kamdynamics/kam-transfer
-After=network-online.target
+After=network-online.target kam-transfer-splash.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=kmendez
 WorkingDirectory=/home/kmendez
+# If the optional boot splash is running, stop it first so the SPI bus is
+# free before we open the Display HAT Mini. The `+` runs this one command
+# as root (needed because User= below is unprivileged and can't stop a
+# system unit); the `-` ignores failure when the splash unit isn't
+# installed or wasn't running.
+ExecStartPre=-+/usr/bin/systemctl stop kam-transfer-splash.service
 ExecStart=/usr/local/bin/kam-transfer serve
 Restart=on-failure
 RestartSec=5

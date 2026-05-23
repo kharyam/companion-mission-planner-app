@@ -132,6 +132,49 @@ func TestUpdateDocImages(t *testing.T) {
 	}
 }
 
+func TestRenderSplash(t *testing.T) {
+	lines := []string{
+		"Starting Network Manager...",
+		"Reached target Network.",
+		"Started Avahi mDNS/DNS-SD Stack.",
+		"this is a very long boot log line that should get truncated to fit the panel width without panicking",
+	}
+	for _, c := range []struct {
+		name  string
+		lines []string
+	}{
+		{"with lines", lines},
+		{"empty", nil}, // before any journal output arrives — banner only
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			img := renderSplash("1.2.3", c.lines)
+			if img == nil || uniform(img) {
+				t.Fatal("renderSplash produced no output")
+			}
+			if b := img.Bounds(); b.Dx() != ScreenW || b.Dy() != ScreenH {
+				t.Errorf("renderSplash size = %dx%d, want %dx%d", b.Dx(), b.Dy(), ScreenW, ScreenH)
+			}
+		})
+	}
+}
+
+func TestLogRing(t *testing.T) {
+	r := newLogRing(3)
+	for _, s := range []string{"a", "b", "c", "d", "e"} {
+		r.push(s)
+	}
+	got := r.snapshot()
+	want := []string{"c", "d", "e"}
+	if len(got) != len(want) {
+		t.Fatalf("ring len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ring[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestHealthLED(t *testing.T) {
 	cases := []struct {
 		name    string
