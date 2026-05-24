@@ -34,8 +34,12 @@ func RunSplash(ctx context.Context, cfg config.DisplayConfig, logger *slog.Logge
 	}
 	// The splash unit starts as soon as udev is up — before local-fs.target,
 	// to skip the /boot fsck wait — so the SPI device node may not exist
-	// yet. Retry for a while before concluding there's no HAT.
-	hw, err := detectWithRetry(ctx, cfg, 10*time.Second)
+	// yet. periph enumerates SPI ports exactly once, at the first
+	// host.Init() (inside detectHardware), so we must wait for the node to
+	// appear BEFORE that call; otherwise it is never registered and
+	// detection fails permanently no matter how often we retry.
+	waitForSPIDevice(ctx, 10*time.Second)
+	hw, err := detectHardware(cfg)
 	if err != nil {
 		// No HAT (or not this platform): a clean no-op, like Run.
 		logger.Info("boot splash inactive", "reason", err)
@@ -83,28 +87,6 @@ func RunSplash(ctx context.Context, cfg config.DisplayConfig, logger *slog.Logge
 				draw()
 				dirty = false
 			}
-		}
-	}
-}
-
-// detectWithRetry calls detectHardware until it succeeds or the window
-// elapses, polling every 250ms. The splash runs before udev is
-// guaranteed to have created /dev/spidev*, so a first miss is expected
-// rather than fatal; it returns the last error if nothing appears.
-func detectWithRetry(ctx context.Context, cfg config.DisplayConfig, window time.Duration) (panel, error) {
-	deadline := time.Now().Add(window)
-	for {
-		hw, err := detectHardware(cfg)
-		if err == nil {
-			return hw, nil
-		}
-		if time.Now().After(deadline) {
-			return nil, err
-		}
-		select {
-		case <-ctx.Done():
-			return nil, err
-		case <-time.After(250 * time.Millisecond):
 		}
 	}
 }

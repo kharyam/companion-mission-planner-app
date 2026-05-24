@@ -3,6 +3,9 @@
 package display
 
 import (
+	"context"
+	"time"
+
 	"github.com/kamdynamics/kam-transfer/internal/config"
 )
 
@@ -18,3 +21,7 @@ func detectHardware(config.DisplayConfig) (panel, error) {
 func openPiSugar() (battery, error) {
 	return nil, ErrNoHardware
 }
+
+// waitForSPIDevice is the non-Linux no-op — there are no spidev nodes to
+// wait for, and detectHardware returns ErrNoHardware regardless.
+func waitForSPIDevice(context.Context, time.Duration) {}

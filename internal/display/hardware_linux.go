@@ -3,7 +3,10 @@
 package display
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"time"
 
 	"periph.io/x/host/v3"
 
@@ -24,4 +27,31 @@ func detectHardware(cfg config.DisplayConfig) (panel, error) {
 		return nil, fmt.Errorf("display HAT unavailable: %w", err)
 	}
 	return hat, nil
+}
+
+// spiDevice is the Display HAT Mini's chip-select node (SPI0 CE1), the
+// one openST7789 opens as "SPI0.1".
+const spiDevice = "/dev/spidev0.1"
+
+// waitForSPIDevice blocks until the SPI device node exists or the timeout
+// passes. The boot splash starts before udev is guaranteed to have created
+// it, and periph enumerates SPI ports only once — at the first host.Init()
+// inside detectHardware — so the node must exist before that call or it is
+// never registered. Returns immediately once present (the normal case for
+// the late-starting status screen). Cancelled ctx returns early.
+func waitForSPIDevice(ctx context.Context, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(spiDevice); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
