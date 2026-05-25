@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os/exec"
 	"strconv"
@@ -153,18 +154,18 @@ func detectWithRetry(ctx context.Context, cfg config.DisplayConfig, window time.
 	}
 }
 
-// tailJournal follows this boot's journal and streams each line. It
-// shells out to journalctl (already present on any systemd host) seeded
-// with the last splashMaxLines lines so the screen fills immediately.
-// The returned channel closes when journalctl exits or ctx is cancelled
-// — e.g. journalctl missing, or the process killed when ctx ends.
+// tailJournal follows this boot's journal and streams each line to the
+// returned channel until ctx is cancelled. It shells out to journalctl
+// (present on any systemd host), seeded with the last splashMaxLines lines
+// so the screen fills immediately.
 //
-// A silently empty log region is almost always journalctl failing here
-// (not on PATH, or no permission to read the system journal — the unit
-// needs SupplementaryGroups=systemd-journal), so the failure path logs
-// the reason and any stderr rather than leaving the screen blank with no
-// explanation. -q drops journalctl's "you are not seeing messages from
-// other users" hint from stderr.
+// The splash starts extremely early (DefaultDependencies=no, to beat the
+// local-fs.target/fsck wait) — early enough that the journal is briefly
+// unreadable: journalctl exits with "No journal files were opened due to
+// insufficient permissions" until journald finishes applying the journal's
+// systemd-journal group ACLs a moment into boot. Giving up on that first
+// miss left the log region empty for the whole boot, so instead we retry
+// until journalctl streams (or ctx ends), logging the reason once.
 func tailJournal(ctx context.Context, logger *slog.Logger) <-chan string {
 	out := make(chan string, 64)
 	go func() {
@@ -173,37 +174,60 @@ func tailJournal(ctx context.Context, logger *slog.Logger) <-chan string {
 			logger.Warn("splash log tail: journalctl not found on PATH", "err", err)
 			return
 		}
-		cmd := exec.CommandContext(ctx, "journalctl",
-			"-b", "-f", "-n", strconv.Itoa(splashMaxLines), "-o", "cat", "-q", "--no-pager")
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			logger.Warn("splash log tail: stdout pipe failed", "err", err)
-			return
-		}
-		if err := cmd.Start(); err != nil {
-			logger.Warn("splash log tail: journalctl failed to start", "err", err)
-			return
-		}
-		sc := bufio.NewScanner(stdout)
-		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for sc.Scan() {
-			select {
-			case out <- sc.Text():
-			case <-ctx.Done():
-				return // CommandContext kills journalctl on ctx end
+		logged := false
+		for ctx.Err() == nil {
+			err := streamJournal(ctx, out)
+			if ctx.Err() != nil {
+				return // daemon stopped the splash at handoff — expected
 			}
-		}
-		// ctx.Err() != nil means the daemon stopped us at handoff — expected,
-		// not worth logging. Otherwise journalctl exited on its own (e.g. a
-		// permission error), which is exactly why the log region was empty.
-		if err := cmd.Wait(); err != nil && ctx.Err() == nil {
-			logger.Warn("splash log tail: journalctl exited",
-				"err", err, "stderr", strings.TrimSpace(stderr.String()))
+			if err != nil && !logged {
+				// First miss only — usually the early-boot permission race,
+				// which the retry rides out once journald sets the ACLs.
+				logger.Warn("splash log tail: journalctl unavailable, retrying", "err", err)
+				logged = true
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
 		}
 	}()
 	return out
+}
+
+// streamJournal runs one journalctl --follow and pumps its lines to out
+// until it exits or ctx is cancelled. It returns journalctl's exit error
+// with any stderr folded in, so tailJournal can log why and retry. -q drops
+// journalctl's "not seeing messages from other users" hint.
+func streamJournal(ctx context.Context, out chan<- string) error {
+	cmd := exec.CommandContext(ctx, "journalctl",
+		"-b", "-f", "-n", strconv.Itoa(splashMaxLines), "-o", "cat", "-q", "--no-pager")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		select {
+		case out <- sc.Text():
+		case <-ctx.Done():
+			return nil
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		if s := strings.TrimSpace(stderr.String()); s != "" {
+			return fmt.Errorf("%w: %s", err, s)
+		}
+		return err
+	}
+	return nil
 }
 
 // logRing is a fixed-capacity FIFO of the most recent log lines. It is
