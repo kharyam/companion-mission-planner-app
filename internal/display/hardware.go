@@ -105,6 +105,7 @@ const (
 	PageStatus   Page = iota // headline: server URL, battery, wifi, controller
 	PageTransfer             // transfer activity
 	PageSystem               // network + system detail
+	PageLogs                 // tail of the kam-transfer service journal
 	pageCount
 
 	// PageQR is an ephemeral overlay (button Y), not part of the cycle.

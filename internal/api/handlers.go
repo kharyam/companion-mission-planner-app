@@ -53,8 +53,8 @@ func (s *Server) handleSystem(w http.ResponseWriter, _ *http.Request) {
 
 // handleSystemDisplay renders one of the front-panel display pages and
 // streams it back as a PNG, so the web UI can show a live mirror.
-// The page is selected via ?page=status|transfer|system|qr; defaults
-// to status.
+// The page is selected via ?page=status|transfer|system|logs|qr;
+// defaults to status.
 func (s *Server) handleSystemDisplay(w http.ResponseWriter, r *http.Request) {
 	page := display.PageStatus
 	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("page"))) {
@@ -64,10 +64,12 @@ func (s *Server) handleSystemDisplay(w http.ResponseWriter, r *http.Request) {
 		page = display.PageTransfer
 	case "system":
 		page = display.PageSystem
+	case "logs":
+		page = display.PageLogs
 	case "qr":
 		page = display.PageQR
 	default:
-		writeError(w, http.StatusBadRequest, CodeBadRequest, "page must be one of status, transfer, system, qr", nil)
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "page must be one of status, transfer, system, logs, qr", nil)
 		return
 	}
 	img := s.display.RenderPage(page)

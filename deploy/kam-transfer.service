@@ -14,7 +14,8 @@
 #
 # For the optional Display HAT Mini status screen, the service user must
 # be in the spi/i2c/gpio groups (`sudo usermod -aG spi,i2c,gpio pi`), or
-# uncomment the SupplementaryGroups line below.
+# uncomment the SupplementaryGroups line below. systemd-journal is what
+# lets the front-panel Logs page tail this unit's journal.
 
 [Unit]
 Description=KAM Mission Planner companion daemon
@@ -39,8 +40,9 @@ RestartSec=5
 # Storage mode) read-only needs CAP_SYS_ADMIN. Without it the daemon
 # still runs — it just can't browse media off USB block devices.
 AmbientCapabilities=CAP_SYS_ADMIN
-# Display HAT Mini status screen — grant GPIO/SPI/I2C access:
-#SupplementaryGroups=spi i2c gpio
+# Display HAT Mini status screen — grant GPIO/SPI/I2C access; systemd-journal
+# lets the Logs page tail this unit's journal:
+#SupplementaryGroups=spi i2c gpio systemd-journal
 
 [Install]
 WantedBy=multi-user.target

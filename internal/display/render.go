@@ -81,6 +81,8 @@ func render(s Snapshot, page Page) *image.RGBA {
 		return renderTransfer(s)
 	case PageSystem:
 		return renderSystem(s)
+	case PageLogs:
+		return renderLogs(s)
 	default:
 		return renderStatus(s)
 	}
@@ -296,6 +298,54 @@ func renderSystem(s Snapshot) *image.RGBA {
 		setFace(dc, fontBold, 13)
 		dc.DrawString(row[1], 120, y)
 		y += 22
+	}
+	return img
+}
+
+// renderLogs shows the tail of the kam-transfer service journal, newest
+// line at the bottom — the on-device companion to
+// `journalctl -u kam-transfer`. It's handy for spotting why a device
+// won't appear (e.g. libmtp "mtp open failed" lines) without SSHing in.
+// The lines are supplied by the background journal tail via the snapshot;
+// the page refreshes at the display's refreshInterval.
+func renderLogs(s Snapshot) *image.RGBA {
+	img, dc := newCanvas()
+	setCol(dc, colBG)
+	dc.Clear()
+	header(dc, "LOGS", s)
+
+	// Fill the whole area below the header with as many lines as fit;
+	// no footer here, so the cramped panel gets every available row.
+	const (
+		top     = 34 + 7 // just under header()'s 34px accent bar
+		lineH   = 12.0   // integer-valued so int(lineH) below is a clean const conversion
+		leftPad = 8.0
+		fontPx  = 9.5
+	)
+	maxW := float64(ScreenW) - 2*leftPad
+	rows := (ScreenH - top) / int(lineH) // integer math: avoid const float→int truncation
+	lines := s.Logs
+	if len(lines) > rows {
+		lines = lines[len(lines)-rows:]
+	}
+	setFace(dc, fontRegular, fontPx)
+	if len(lines) == 0 {
+		// No lines yet: tail still connecting, or the service user can't
+		// read the journal (needs SupplementaryGroups=systemd-journal).
+		setCol(dc, colMuted)
+		dc.DrawString("waiting for kam-transfer log…", leftPad, float64(top)+lineH)
+		return img
+	}
+	y := float64(top) + lineH
+	last := len(lines) - 1
+	for i, ln := range lines {
+		if i == last {
+			setCol(dc, colText) // newest line brightest
+		} else {
+			setCol(dc, colMuted)
+		}
+		dc.DrawString(truncateToWidth(dc, ln, maxW), leftPad, y)
+		y += lineH
 	}
 	return img
 }

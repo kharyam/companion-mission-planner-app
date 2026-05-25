@@ -43,6 +43,11 @@ type Controller struct {
 	// the HTTP API can surface it without taking on its own I2C polling.
 	// nil while no PiSugar has been detected (or before the first read).
 	latestBattery atomic.Pointer[BatteryStatus]
+
+	// logs is the rolling tail of the kam-transfer service journal that
+	// the Logs page renders. Filled by runServiceLogTail (started in Run)
+	// and read by snapshot(); empty until the first line streams in.
+	logs *logBuffer
 }
 
 // New builds a Controller. It touches no hardware — detection happens
@@ -56,6 +61,7 @@ func New(cfg *config.Config, reg *device.Registry, transferBusy func() bool, log
 		transferBusy: transferBusy,
 		logger:       logger.With("component", "display"),
 		started:      time.Now(),
+		logs:         newLogBuffer(logBufferMax),
 	}
 }
 
@@ -77,6 +83,10 @@ func (c *Controller) Run(ctx context.Context) {
 	}
 	defer hw.Close()
 	c.logger.Info("status display active")
+	// Tail the daemon's own journal in the background so the Logs page
+	// (and the web-UI screen mirror) have lines to show. Bound to ctx, so
+	// it stops when the daemon does.
+	go c.runServiceLogTail(ctx)
 	c.loop(ctx, hw)
 }
 
@@ -306,6 +316,7 @@ type Snapshot struct {
 	CPUTempC     float64
 	Uptime       time.Duration
 	Now          time.Time
+	Logs         []string // newest-last tail of the kam-transfer journal
 }
 
 // NetStatus is the best reachable network interface.
@@ -342,6 +353,9 @@ func (c *Controller) snapshot() Snapshot {
 	s.Controller = controllerStatus(c.registry.Snapshot())
 	if b := c.latestBattery.Load(); b != nil {
 		s.Battery = *b
+	}
+	if c.logs != nil {
+		s.Logs = c.logs.snapshot()
 	}
 	return s
 }

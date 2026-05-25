@@ -20,6 +20,12 @@ func sampleSnapshot() Snapshot {
 		CPUTempC:     48.3,
 		Uptime:       3*time.Hour + 12*time.Minute,
 		Now:          time.Now(),
+		Logs: []string{
+			"registry refresh elapsed=812ms",
+			"Device 0 (VID=2ca3 and PID=1021) is a DJI Controller 2.",
+			"mtp open id=usb:1-7 elapsed=143ms",
+			"classified MTP device as controller",
+		},
 	}
 }
 
@@ -41,7 +47,7 @@ func uniform(img *image.RGBA) bool {
 
 func TestRenderPages(t *testing.T) {
 	s := sampleSnapshot()
-	for _, page := range []Page{PageStatus, PageTransfer, PageSystem, PageQR} {
+	for _, page := range []Page{PageStatus, PageTransfer, PageSystem, PageLogs, PageQR} {
 		img := render(s, page)
 		if img == nil {
 			t.Fatalf("render(page %d) returned nil", page)
@@ -59,7 +65,7 @@ func TestRenderPages(t *testing.T) {
 // no battery, no network, no controller — which is what a bare Pi
 // shows. It must not panic and must still draw something.
 func TestRenderEmpty(t *testing.T) {
-	for _, page := range []Page{PageStatus, PageTransfer, PageSystem} {
+	for _, page := range []Page{PageStatus, PageTransfer, PageSystem, PageLogs} {
 		img := render(Snapshot{}, page)
 		if img == nil || uniform(img) {
 			t.Errorf("render(empty, page %d) produced no output", page)
@@ -107,12 +113,22 @@ func TestUpdateDocImages(t *testing.T) {
 	warn.Uptime = 47 * time.Minute
 	transferring := ok
 	transferring.Transferring = true
+	withLogs := ok
+	withLogs.Logs = []string{
+		"registry refresh elapsed=812ms",
+		"Device 0 (VID=2ca3 and PID=1021) is a DJI Controller 2.",
+		"mtp open id=usb:1-7 elapsed=143ms",
+		"classified MTP device as controller",
+		"GET /api/devices 200 12ms",
+		"GET /api/devices/.../slots 200 38ms",
+	}
 
 	images := map[string]*image.RGBA{
 		"display-status.png":         renderStatus(ok),
 		"display-status-warning.png": renderStatus(warn),
 		"display-transfer.png":       renderTransfer(transferring),
 		"display-system.png":         renderSystem(ok),
+		"display-logs.png":           renderLogs(withLogs),
 		"display-qr.png":             renderQR(ok.URL),
 		"display-shutdown.png":       renderMessage("Shutting down", "It is now safe to remove power"),
 	}
