@@ -356,6 +356,7 @@ else
       echo "  brightness: 80"
       echo "  rotation: $DISPLAY_ROTATION"
       echo "  allowShutdown: true"
+      echo "  idleOff: 2m    # blank the screen after this idle time; 0 to disable"
     fi
   } > "$CONFIG_FILE"
   info "wrote $CONFIG_FILE"

@@ -119,20 +119,63 @@ func (c *Controller) RunBattery(ctx context.Context) {
 }
 
 // loop is the redraw/input loop. It runs only once hardware is confirmed.
+//
+// When cfg.IdleOff is set, the panel blanks (backlight + LED off) after that
+// long with no activity and wakes on the next one. Activity is a device or
+// controller change (registry event), a transfer starting/stopping, or a
+// button press — but NOT the periodic refresh or the self-updating bits of
+// the status page (battery, clock), so the screen actually gets to idle.
 func (c *Controller) loop(ctx context.Context, hw panel) {
 	page := PageStatus
-	backlightOn := true
-	_ = hw.SetBacklight(c.cfg.Brightness)
+	brightness := c.cfg.Brightness
+	if brightness <= 0 {
+		brightness = 80
+	}
+	idleOff := c.cfg.IdleOff.Std()
+
+	screenOn := true
+	lastActivity := time.Now()
+	var lastSig activitySignal
+	sigInit := false
+	_ = hw.SetBacklight(brightness)
 
 	ticker := time.NewTicker(c.refreshInterval())
 	defer ticker.Stop()
 	events := c.registry.Watch(ctx)
 	buttons := hw.Buttons()
 
+	wake := func() {
+		lastActivity = time.Now()
+		if !screenOn {
+			screenOn = true
+			_ = hw.SetBacklight(brightness)
+		}
+	}
+	sleep := func() {
+		if !screenOn {
+			return
+		}
+		screenOn = false
+		_ = hw.SetBacklight(0)
+		_ = hw.SetLED(false, false, false)
+	}
+
+	// draw samples the daemon state, wakes the screen if the activity
+	// signal changed (a device/transfer/controller change happening while
+	// idle), then repaints — but only while awake, so an idle-blanked panel
+	// stays dark and off the SPI bus.
 	draw := func() {
 		snap := c.snapshot()
-		var img = render(snap, page)
-		if err := hw.Blit(img); err != nil {
+		if sig := activityOf(snap); sigInit && sig != lastSig {
+			lastSig = sig
+			wake()
+		} else {
+			lastSig, sigInit = sig, true
+		}
+		if !screenOn {
+			return
+		}
+		if err := hw.Blit(render(snap, page)); err != nil {
 			c.logger.Warn("screen blit failed", "err", err)
 		}
 		r, g, b := healthLED(snap)
@@ -147,6 +190,9 @@ func (c *Controller) loop(ctx context.Context, hw panel) {
 
 		case <-ticker.C:
 			draw()
+			if idleOff > 0 && screenOn && time.Since(lastActivity) >= idleOff {
+				sleep()
+			}
 
 		case _, ok := <-events:
 			if !ok {
@@ -158,12 +204,22 @@ func (c *Controller) loop(ctx context.Context, hw panel) {
 				events = c.registry.Watch(ctx)
 				continue
 			}
+			// A registry event is a real device-state change — activity.
+			wake()
 			draw()
 
 		case be, ok := <-buttons:
 			if !ok {
 				return
 			}
+			// A press on a blanked screen only wakes it; it does not also
+			// act, so you never trigger a page flip or shutdown blind.
+			if !screenOn {
+				wake()
+				draw()
+				continue
+			}
+			wake() // interaction resets the idle timer
 			switch be.Button {
 			case ButtonA, ButtonX:
 				if page == PageQR {
@@ -172,12 +228,7 @@ func (c *Controller) loop(ctx context.Context, hw panel) {
 					page = (page + 1) % pageCount
 				}
 			case ButtonB:
-				backlightOn = !backlightOn
-				level := 0
-				if backlightOn {
-					level = c.cfg.Brightness
-				}
-				_ = hw.SetBacklight(level)
+				sleep() // manual screen off
 			case ButtonY:
 				if be.Long && c.cfg.AllowShutdown {
 					c.shutdown(hw)
@@ -191,6 +242,33 @@ func (c *Controller) loop(ctx context.Context, hw panel) {
 			}
 			draw()
 		}
+	}
+}
+
+// activitySignal captures the parts of a Snapshot that represent real
+// front-panel activity — a transfer, or a device/controller change — so a
+// change between samples can wake an idle-blanked screen. Self-updating
+// fields (battery, CPU temp, uptime, clock) are deliberately excluded so
+// they don't keep the panel awake forever.
+type activitySignal struct {
+	transferring bool
+	ctrlConn     bool
+	ctrlState    string
+	ctrlLabel    string
+	netUp        bool
+	netIface     string
+	netSSID      string
+}
+
+func activityOf(s Snapshot) activitySignal {
+	return activitySignal{
+		transferring: s.Transferring,
+		ctrlConn:     s.Controller.Connected,
+		ctrlState:    s.Controller.State,
+		ctrlLabel:    s.Controller.Label,
+		netUp:        s.Net.Up,
+		netIface:     s.Net.Iface,
+		netSSID:      s.Net.SSID,
 	}
 }
 

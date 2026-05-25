@@ -68,6 +68,10 @@ type DisplayConfig struct {
 	// default: it runs `sudo systemctl poweroff`, which needs a NOPASSWD
 	// sudoers rule for the service user.
 	AllowShutdown bool `yaml:"allowShutdown"`
+	// IdleOff blanks the screen (backlight off) after this much time with
+	// no activity — no device/controller change, transfer, or button press.
+	// Any activity wakes it. 0 disables the feature (screen always on).
+	IdleOff Duration `yaml:"idleOff"`
 }
 
 // Duration is a yaml-friendly time.Duration.
@@ -122,6 +126,7 @@ func Default() *Config {
 			Brightness:      80,
 			Rotation:        180,
 			AllowShutdown:   false,
+			IdleOff:         Duration(2 * time.Minute),
 		},
 	}
 }
