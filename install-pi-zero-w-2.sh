@@ -235,13 +235,34 @@ fi
 info "modules verified"
 
 step "Building the daemon (this can take a while on a Pi Zero 2 W)"
+
+# GOFLAGS="-p=2" limits build parallelism to keep peak memory sane on a 512 MB
+# board (MTP/cgo path only; the pure-Go build is lighter).
+run_build() {
+  if [ "$BUILD_MTP" = true ]; then
+    GOFLAGS="-p=2" make build-mtp
+  else
+    make build
+  fi
+}
+
 if [ "$BUILD_MTP" = true ]; then
-  # Limit build parallelism to keep peak memory sane on a 512 MB board.
-  GOFLAGS="-p=2" make build-mtp
   BUILT_BIN="$SRC_DIR/dist/kam-transfer-mtp"
 else
-  make build
   BUILT_BIN="$SRC_DIR/dist/kam-transfer"
+fi
+
+# A stale/poisoned Go build cache ($GOCACHE) can make a build fail
+# deterministically even when the module cache is valid and 'go mod verify'
+# passes — e.g. a parser error ("expected 'package', found 'EOF'") on a
+# dependency whose source is byte-perfect on disk. It's a read of a cached
+# build artifact, not the source, so clearing the build cache fixes it. Build
+# normally first (the cache makes repeat installs fast); only on failure wipe
+# $GOCACHE and retry once before giving up.
+if ! run_build; then
+  warn "build failed — clearing the Go build cache ($(go env GOCACHE)) and retrying once"
+  go clean -cache || true
+  run_build || die "build still failing after a build-cache clean; see the error above"
 fi
 [ -x "$BUILT_BIN" ] || die "build did not produce $BUILT_BIN"
 
