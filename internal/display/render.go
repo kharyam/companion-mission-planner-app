@@ -314,21 +314,22 @@ func renderLogs(s Snapshot) *image.RGBA {
 	dc.Clear()
 	header(dc, "LOGS", s)
 
-	// Fill the whole area below the header with as many lines as fit;
-	// no footer here, so the cramped panel gets every available row.
+	// Fill the area below the header. Long lines wrap (rather than
+	// truncate) across multiple rows so nothing is lost; continuation
+	// rows are indented so a wrapped entry reads as one block. No footer,
+	// so the cramped panel gets every available row.
 	const (
-		top     = 34 + 7 // just under header()'s 34px accent bar
-		lineH   = 12.0   // integer-valued so int(lineH) below is a clean const conversion
-		leftPad = 8.0
-		fontPx  = 9.5
+		top     = 34 + 4 // just under header()'s 34px accent bar
+		lineH   = 15.0   // integer-valued so int(lineH) below is a clean const conversion
+		leftPad = 6.0
+		contPad = 14.0 // extra indent for wrapped continuation rows
+		fontPx  = 12.0  // larger than the splash log for on-device readability
 	)
-	maxW := float64(ScreenW) - 2*leftPad
-	rows := (ScreenH - top) / int(lineH) // integer math: avoid const float→int truncation
+	maxRows := (ScreenH - top) / int(lineH)            // integer math: avoid const float→int truncation
+	wrapW := float64(ScreenW) - 2*leftPad - contPad    // width a continuation row must fit
+	setFace(dc, fontRegular, fontPx)                   // set before any MeasureString
+
 	lines := s.Logs
-	if len(lines) > rows {
-		lines = lines[len(lines)-rows:]
-	}
-	setFace(dc, fontRegular, fontPx)
 	if len(lines) == 0 {
 		// No lines yet: tail still connecting, or the service user can't
 		// read the journal (needs SupplementaryGroups=systemd-journal).
@@ -336,18 +337,81 @@ func renderLogs(s Snapshot) *image.RGBA {
 		dc.DrawString("waiting for kam-transfer log…", leftPad, float64(top)+lineH)
 		return img
 	}
-	y := float64(top) + lineH
+
+	// Wrap every line to the panel width, newest entry last, then keep
+	// only the final maxRows display rows so the newest content sits at
+	// the bottom.
+	type logRow struct {
+		text   string
+		x      float64
+		newest bool
+	}
 	last := len(lines) - 1
+	var allRows []logRow
 	for i, ln := range lines {
-		if i == last {
-			setCol(dc, colText) // newest line brightest
+		for j, w := range wrapToWidth(dc, ln, wrapW) {
+			x := float64(leftPad)
+			if j > 0 {
+				x += contPad // continuation row
+			}
+			allRows = append(allRows, logRow{text: w, x: x, newest: i == last})
+		}
+	}
+	if len(allRows) > maxRows {
+		allRows = allRows[len(allRows)-maxRows:]
+	}
+	y := float64(top) + lineH
+	for _, r := range allRows {
+		if r.newest {
+			setCol(dc, colText) // newest entry brightest
 		} else {
 			setCol(dc, colMuted)
 		}
-		dc.DrawString(truncateToWidth(dc, ln, maxW), leftPad, y)
+		dc.DrawString(r.text, r.x, y)
 		y += lineH
 	}
 	return img
+}
+
+// wrapToWidth breaks s into lines that each fit maxW at the context's
+// current font face. It wraps on spaces and hard-breaks any single token
+// too wide to fit on its own. Always returns at least one line.
+func wrapToWidth(dc *gg.Context, s string, maxW float64) []string {
+	var out []string
+	cur := ""
+	for _, word := range strings.Split(s, " ") {
+		cand := word
+		if cur != "" {
+			cand = cur + " " + word
+		}
+		if w, _ := dc.MeasureString(cand); w <= maxW {
+			cur = cand
+			continue
+		}
+		// cand overflows: commit the current row, then place the word.
+		if cur != "" {
+			out = append(out, cur)
+			cur = ""
+		}
+		if w, _ := dc.MeasureString(word); w <= maxW {
+			cur = word
+			continue
+		}
+		// A single token wider than the panel — hard-break it by runes.
+		chunk := ""
+		for _, r := range word {
+			t := chunk + string(r)
+			if w, _ := dc.MeasureString(t); w <= maxW || chunk == "" {
+				chunk = t
+				continue
+			}
+			out = append(out, chunk)
+			chunk = string(r)
+		}
+		cur = chunk
+	}
+	out = append(out, cur)
+	return out
 }
 
 // renderQR draws a full-screen QR code of the server URL.
