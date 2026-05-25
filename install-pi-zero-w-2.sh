@@ -185,9 +185,56 @@ else
   fi
 fi
 
-# ---- 5. build --------------------------------------------------------------
-step "Building the daemon (this can take a while on a Pi Zero 2 W)"
+# ---- 5. dependencies + build -----------------------------------------------
 cd "$SRC_DIR"
+
+# A from-scratch build on a memory/space-tight Pi (Zero 2 W) can leave a
+# partial Go module cache when it's OOM-killed or the SD card fills mid
+# download/extract. That resurfaces later as a confusing "checksum mismatch"
+# or an empty source file ("expected 'package', found 'EOF'") deep in the cgo
+# build. Fetch + verify the modules up front: it's cheap, turns those into an
+# early, clear failure, and we can self-heal once by wiping the cache.
+step "Fetching + verifying Go modules"
+
+# Reclaim Go/apt caches when the filesystem holding the module cache is tight,
+# and warn if it's still below what the cgo build needs.
+ensure_free_space() {
+  local need_mb=2048 avail_mb
+  avail_mb="$(df -Pm "$HOME" 2>/dev/null | awk 'NR==2{print $4}')"
+  if [ "${avail_mb:-0}" -lt "$need_mb" ]; then
+    warn "low free space on $HOME (${avail_mb:-?} MB) — reclaiming Go/apt caches"
+    go clean -modcache 2>/dev/null || true
+    go clean -cache    2>/dev/null || true
+    sudo apt-get clean 2>/dev/null || true
+    avail_mb="$(df -Pm "$HOME" 2>/dev/null | awk 'NR==2{print $4}')"
+    info "free space now ${avail_mb:-?} MB on $HOME"
+    [ "${avail_mb:-0}" -ge "$need_mb" ] \
+      || warn "still under ${need_mb} MB free — the build may fail; use a larger/healthier SD card"
+  fi
+}
+
+# A GOPROXY of "off" can't fetch on a fresh box; leave any deliberate custom
+# proxy/mirror alone.
+if [ "${GOPROXY:-}" = "off" ]; then
+  warn "GOPROXY=off — overriding to the public proxy for this build"
+  export GOPROXY="https://proxy.golang.org,direct"
+fi
+
+# go mod verify hashes the extracted cache against go.sum, so it catches both
+# a bad-checksum download and a truncated/empty extracted file.
+fetch_modules() { go mod download && go mod verify; }
+
+ensure_free_space
+if ! fetch_modules; then
+  warn "module download/verify failed — wiping the module cache and retrying once"
+  go clean -modcache || true
+  ensure_free_space
+  fetch_modules \
+    || die "Go modules still failing after a clean cache — most likely a full or failing SD card. Check 'df -h' and 'dmesg | grep -i mmc', then re-run."
+fi
+info "modules verified"
+
+step "Building the daemon (this can take a while on a Pi Zero 2 W)"
 if [ "$BUILD_MTP" = true ]; then
   # Limit build parallelism to keep peak memory sane on a 512 MB board.
   GOFLAGS="-p=2" make build-mtp
