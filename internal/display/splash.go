@@ -16,6 +16,21 @@ import (
 // renders — roughly what fits in the scroll region under the banner.
 const splashMaxLines = 14
 
+const (
+	// spiNodeTimeout caps how long we wait for /dev/spidev0.1 to appear
+	// before the first host.Init(). It is a cap, not a cost: waitForSPIDevice
+	// returns the instant the node shows up, so a warm boot pays nothing.
+	// Generous on purpose — this unit starts very early, and a cold Pi Zero
+	// 2 W can take a few seconds to create the node; giving up too soon is
+	// the difference between a splash and a blank screen for the whole boot.
+	spiNodeTimeout = 20 * time.Second
+	// hatRetryWindow is how long, after the node exists, we keep retrying the
+	// HAT bring-up for transient (uncached) failures — a GPIO line or the SPI
+	// handshake not yet ready this early — before concluding the HAT is
+	// genuinely absent.
+	hatRetryWindow = 5 * time.Second
+)
+
 // RunSplash drives a boot splash on the Display HAT Mini: a "starting"
 // banner with the tail of the system journal scrolling beneath it. It is
 // meant to run as an early systemd service (kam-transfer-splash.service),
@@ -33,13 +48,33 @@ func RunSplash(ctx context.Context, cfg config.DisplayConfig, logger *slog.Logge
 		return nil
 	}
 	// The splash unit starts as soon as udev is up — before local-fs.target,
-	// to skip the /boot fsck wait — so the SPI device node may not exist
-	// yet. periph enumerates SPI ports exactly once, at the first
-	// host.Init() (inside detectHardware), so we must wait for the node to
-	// appear BEFORE that call; otherwise it is never registered and
-	// detection fails permanently no matter how often we retry.
-	waitForSPIDevice(ctx, 10*time.Second)
-	hw, err := detectHardware(cfg)
+	// to skip the /boot fsck wait — so the device nodes may not exist yet.
+	// Two early-boot races have to be absorbed, both rooted in periph
+	// enumerating its buses exactly once, at the first host.Init():
+	//
+	//   1. SPI ports are registered from whatever /dev/spidev* nodes exist at
+	//      that first host.Init(). If /dev/spidev0.1 is missing then, zero
+	//      ports register and the result is cached — no later retry can
+	//      recover it. So wait for the node to appear BEFORE detectHardware
+	//      makes that first call.
+	//   2. The rest of the bring-up (GPIO lines, the SPI handshake) can still
+	//      fail on the first pass while udev finishes settling. Those failures
+	//      are NOT cached, so retry detectHardware for a short window once the
+	//      node is up. (Dropping this retry is what broke the splash before:
+	//      a single transient miss left a blank screen for the whole boot.)
+	//
+	// waitForSPIDevice returns the instant the node appears, so on a normal
+	// boot this adds no latency — the splash comes up as soon as the HAT is
+	// ready, which is the whole point of starting this unit so early.
+	if waitForSPIDevice(ctx, spiNodeTimeout) {
+		logger.Debug("SPI device node present; bringing up HAT")
+	} else {
+		// Non-Linux build, SPI disabled, or no HAT: the node never appears,
+		// and detectWithRetry concludes cleanly below. Logged so a missing
+		// splash on real hardware is diagnosable from this boot's journal.
+		logger.Info("SPI device node not seen before timeout; trying anyway", "timeout", spiNodeTimeout)
+	}
+	hw, err := detectWithRetry(ctx, cfg, hatRetryWindow)
 	if err != nil {
 		// No HAT (or not this platform): a clean no-op, like Run.
 		logger.Info("boot splash inactive", "reason", err)
@@ -87,6 +122,31 @@ func RunSplash(ctx context.Context, cfg config.DisplayConfig, logger *slog.Logge
 				draw()
 				dirty = false
 			}
+		}
+	}
+}
+
+// detectWithRetry calls detectHardware until it succeeds or the window
+// elapses, polling every 250ms. Once waitForSPIDevice has confirmed the
+// SPI node — so periph's one-shot port enumeration sees it — the only
+// failure modes left are transient and uncached (a GPIO line or the SPI
+// handshake not yet ready this early in boot), so a retry recovers them.
+// Returns the last error if nothing comes up in time. Honors ctx so the
+// daemon's SIGTERM at handoff stops it promptly.
+func detectWithRetry(ctx context.Context, cfg config.DisplayConfig, window time.Duration) (panel, error) {
+	deadline := time.Now().Add(window)
+	for {
+		hw, err := detectHardware(cfg)
+		if err == nil {
+			return hw, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(250 * time.Millisecond):
 		}
 	}
 }

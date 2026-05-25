@@ -34,23 +34,24 @@ func detectHardware(cfg config.DisplayConfig) (panel, error) {
 const spiDevice = "/dev/spidev0.1"
 
 // waitForSPIDevice blocks until the SPI device node exists or the timeout
-// passes. The boot splash starts before udev is guaranteed to have created
-// it, and periph enumerates SPI ports only once — at the first host.Init()
-// inside detectHardware — so the node must exist before that call or it is
-// never registered. Returns immediately once present (the normal case for
-// the late-starting status screen). Cancelled ctx returns early.
-func waitForSPIDevice(ctx context.Context, timeout time.Duration) {
+// passes, reporting whether it appeared. The boot splash starts before udev
+// is guaranteed to have created it, and periph enumerates SPI ports only
+// once — at the first host.Init() inside detectHardware — so the node must
+// exist before that call or it is never registered. Returns true immediately
+// once present (the normal case for the late-starting status screen) and
+// false on timeout or a cancelled ctx.
+func waitForSPIDevice(ctx context.Context, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {
 		if _, err := os.Stat(spiDevice); err == nil {
-			return
+			return true
 		}
 		if time.Now().After(deadline) {
-			return
+			return false
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-time.After(200 * time.Millisecond):
 		}
 	}

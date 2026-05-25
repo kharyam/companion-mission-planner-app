@@ -24,4 +24,4 @@ func openPiSugar() (battery, error) {
 
 // waitForSPIDevice is the non-Linux no-op — there are no spidev nodes to
 // wait for, and detectHardware returns ErrNoHardware regardless.
-func waitForSPIDevice(context.Context, time.Duration) {}
+func waitForSPIDevice(context.Context, time.Duration) bool { return false }
