@@ -27,10 +27,24 @@ const logBufferMax = 40
 // lines. The journal-tail goroutine pushes while the render loop and the
 // HTTP screen-mirror read, so — unlike splash's single-goroutine logRing
 // — it needs a lock.
+//
+// Consecutive identical lines are collapsed into a single entry with a
+// repeat count rather than stored individually. libmtp re-prints its
+// "Device N … is a DJI Controller 2." line on every hotplug poll (~every
+// 2s), which would otherwise fill the whole buffer and evict the useful
+// startup/refresh history within a minute or two; collapsing keeps that
+// history visible and surfaces the repeat as a "(×N)" suffix.
 type logBuffer struct {
 	mu  sync.Mutex
-	buf []string
+	buf []logEntry
 	max int
+}
+
+// logEntry is one buffered line plus how many consecutive identical lines
+// have been folded into it (count == 1 for a normal, un-repeated line).
+type logEntry struct {
+	text  string
+	count int
 }
 
 func newLogBuffer(max int) *logBuffer { return &logBuffer{max: max} }
@@ -38,7 +52,11 @@ func newLogBuffer(max int) *logBuffer { return &logBuffer{max: max} }
 func (b *logBuffer) push(s string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.buf = append(b.buf, s)
+	if n := len(b.buf); n > 0 && b.buf[n-1].text == s {
+		b.buf[n-1].count++
+		return
+	}
+	b.buf = append(b.buf, logEntry{text: s, count: 1})
 	if len(b.buf) > b.max {
 		b.buf = b.buf[len(b.buf)-b.max:]
 	}
@@ -48,7 +66,13 @@ func (b *logBuffer) snapshot() []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	out := make([]string, len(b.buf))
-	copy(out, b.buf)
+	for i, e := range b.buf {
+		if e.count > 1 {
+			out[i] = fmt.Sprintf("%s  (×%d)", e.text, e.count)
+		} else {
+			out[i] = e.text
+		}
+	}
 	return out
 }
 

@@ -115,10 +115,10 @@ func TestUpdateDocImages(t *testing.T) {
 	transferring.Transferring = true
 	withLogs := ok
 	withLogs.Logs = []string{
-		"registry refresh elapsed=812ms",
-		"Device 0 (VID=2ca3 and PID=1021) is a DJI Controller 2.",
 		"mtp open id=usb:1-7 elapsed=143ms",
 		"classified MTP device as controller",
+		"registry refresh elapsed=812ms",
+		"Device 0 (VID=2ca3 and PID=1021) is a DJI Controller 2.  (×42)",
 		"GET /api/devices 200 12ms",
 		"GET /api/devices/.../slots 200 38ms",
 	}
