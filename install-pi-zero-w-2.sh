@@ -339,10 +339,21 @@ else
     echo "  port: $SERVER_PORT"
     echo "  bind: $BIND_ADDR"
     echo "  corsOrigins:"
-    echo "    - http://localhost:5173"
-    echo "    - http://127.0.0.1:5173"
-    echo "    # Add your KAM Mission Planner origin(s) here, e.g.:"
-    echo "    # - https://kam.<your-tailnet>.ts.net"
+    if [ -n "$AUTH_TOKEN" ]; then
+      # A bearer auth token is set below, so the token — not CORS — is the
+      # access control (it's a header token the browser never sends on its
+      # own). Allow any origin so the Mission Planner connects from whatever
+      # URL it's served at, with no extra setup. Lock this down to a specific
+      # origin if you ever run without a token.
+      echo "    - \"*\""
+    else
+      # No auth token: keep CORS restrictive so a site the operator happens to
+      # visit can't script the daemon through their browser. Add your Mission
+      # Planner origin (scheme+host+port, exact match):
+      echo "    - http://localhost:5173"
+      echo "    - http://127.0.0.1:5173"
+      echo "    # - https://kam.<your-tailnet>.ts.net"
+    fi
     echo ""
     echo "logging:"
     echo "  level: info"
