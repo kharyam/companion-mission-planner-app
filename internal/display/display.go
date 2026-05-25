@@ -165,7 +165,7 @@ func (c *Controller) loop(ctx context.Context, hw panel) {
 				return
 			}
 			switch be.Button {
-			case ButtonA:
+			case ButtonA, ButtonX:
 				if page == PageQR {
 					page = PageStatus
 				} else {
@@ -178,13 +178,6 @@ func (c *Controller) loop(ctx context.Context, hw panel) {
 					level = c.cfg.Brightness
 				}
 				_ = hw.SetBacklight(level)
-			case ButtonX:
-				c.logger.Info("manual device rescan (button X)")
-				go func() {
-					if err := c.registry.Refresh(context.Background()); err != nil {
-						c.logger.Warn("rescan failed", "err", err)
-					}
-				}()
 			case ButtonY:
 				if be.Long && c.cfg.AllowShutdown {
 					c.shutdown(hw)
