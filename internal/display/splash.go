@@ -2,10 +2,12 @@ package display
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"log/slog"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kamdynamics/kam-transfer/internal/config"
@@ -91,7 +93,7 @@ func RunSplash(ctx context.Context, cfg config.DisplayConfig, logger *slog.Logge
 	_ = hw.SetLED(false, false, true) // blue = booting
 
 	ring := newLogRing(splashMaxLines)
-	journal := tailJournal(ctx)
+	journal := tailJournal(ctx, logger)
 
 	draw := func() {
 		if err := hw.Blit(renderSplash(version.Version, ring.snapshot())); err != nil {
@@ -156,17 +158,32 @@ func detectWithRetry(ctx context.Context, cfg config.DisplayConfig, window time.
 // with the last splashMaxLines lines so the screen fills immediately.
 // The returned channel closes when journalctl exits or ctx is cancelled
 // — e.g. journalctl missing, or the process killed when ctx ends.
-func tailJournal(ctx context.Context) <-chan string {
+//
+// A silently empty log region is almost always journalctl failing here
+// (not on PATH, or no permission to read the system journal — the unit
+// needs SupplementaryGroups=systemd-journal), so the failure path logs
+// the reason and any stderr rather than leaving the screen blank with no
+// explanation. -q drops journalctl's "you are not seeing messages from
+// other users" hint from stderr.
+func tailJournal(ctx context.Context, logger *slog.Logger) <-chan string {
 	out := make(chan string, 64)
 	go func() {
 		defer close(out)
+		if _, err := exec.LookPath("journalctl"); err != nil {
+			logger.Warn("splash log tail: journalctl not found on PATH", "err", err)
+			return
+		}
 		cmd := exec.CommandContext(ctx, "journalctl",
-			"-b", "-f", "-n", strconv.Itoa(splashMaxLines), "-o", "cat", "--no-pager")
+			"-b", "-f", "-n", strconv.Itoa(splashMaxLines), "-o", "cat", "-q", "--no-pager")
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
+			logger.Warn("splash log tail: stdout pipe failed", "err", err)
 			return
 		}
 		if err := cmd.Start(); err != nil {
+			logger.Warn("splash log tail: journalctl failed to start", "err", err)
 			return
 		}
 		sc := bufio.NewScanner(stdout)
@@ -178,7 +195,13 @@ func tailJournal(ctx context.Context) <-chan string {
 				return // CommandContext kills journalctl on ctx end
 			}
 		}
-		_ = cmd.Wait()
+		// ctx.Err() != nil means the daemon stopped us at handoff — expected,
+		// not worth logging. Otherwise journalctl exited on its own (e.g. a
+		// permission error), which is exactly why the log region was empty.
+		if err := cmd.Wait(); err != nil && ctx.Err() == nil {
+			logger.Warn("splash log tail: journalctl exited",
+				"err", err, "stderr", strings.TrimSpace(stderr.String()))
+		}
 	}()
 	return out
 }

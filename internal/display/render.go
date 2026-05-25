@@ -371,6 +371,14 @@ func renderSplash(ver string, lines []string) *image.RGBA {
 		lines = lines[len(lines)-rows:]
 	}
 	setFace(dc, fontRegular, fontPx)
+	if len(lines) == 0 {
+		// No journal lines yet (early boot, or journalctl can't read the
+		// journal). Show that rather than a blank black box; it clears as
+		// soon as the first line arrives.
+		setCol(dc, colMuted)
+		dc.DrawString("waiting for system log…", leftPad, float64(top)+lineH)
+		return img
+	}
 	y := float64(top) + lineH
 	last := len(lines) - 1
 	for i, ln := range lines {
