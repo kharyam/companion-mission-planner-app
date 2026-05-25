@@ -101,6 +101,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// Fan registry-level device events out to WebSocket subscribers.
 	go s.pumpDeviceEvents(ctx)
 
+	// Keep the cached device set fresh from the daemon itself, so the
+	// front-panel screen reflects an attached controller even when no API
+	// client is polling /api/devices.
+	go s.keepDevicesFresh(ctx)
+
 	// Drive the optional Raspberry Pi front-panel status screen. A
 	// no-op (returns immediately) when the Display HAT is not present.
 	go s.display.Run(ctx)
@@ -151,6 +156,40 @@ func (s *Server) pumpDeviceEvents(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(backoff):
+		}
+	}
+}
+
+// deviceRefreshInterval is how often the daemon re-scans connected
+// devices on its own.
+//
+// The front-panel screen renders a cached device snapshot
+// (registry.Snapshot), and that cache is only ever populated by
+// registry.Refresh — which otherwise runs solely when an API client (the
+// KAM planner) hits /api/devices, or a CLI command runs. So a Pi running
+// standalone would detect an attached controller over USB (the MTP
+// hotplug poll logs it every couple seconds) yet never *open* it, leaving
+// the screen stuck on "no controller". This loop is what closes that gap.
+//
+// Steady-state cost is low: Refresh reuses live MTP/ADB handles via a
+// cheap liveness Ping rather than reopening, and the USB bus is already
+// being scanned at a faster cadence by the hotplug watcher.
+const deviceRefreshInterval = 5 * time.Second
+
+// keepDevicesFresh refreshes the registry promptly at startup and then on
+// deviceRefreshInterval, until ctx is cancelled. See deviceRefreshInterval
+// for why this is needed.
+func (s *Server) keepDevicesFresh(ctx context.Context) {
+	t := time.NewTicker(deviceRefreshInterval)
+	defer t.Stop()
+	for {
+		if err := s.registry.Refresh(ctx); err != nil && ctx.Err() == nil {
+			s.logger.Debug("background device refresh failed", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
 		}
 	}
 }
